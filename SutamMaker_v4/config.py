@@ -1,16 +1,16 @@
 """
 SutamMaker v4 — config.py
 ━━━━━━━━━━━━━━━━━━━━━━━━━
-All global constants, file-path helpers, and persistent config (JSON) live here.
-No Tkinter / docx / matplotlib dependencies allowed.
+Global constants, file-path helpers, and persistent config (JSON).
+No Tkinter / docx / matplotlib dependencies.
+
+Data I/O (history, draft, qbank) is in data/data_manager.py.
+PDF conversion is in core/docx_generator.py.
 """
 
 import os
 import json
 import hashlib
-import shutil
-import tempfile
-import datetime
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 0. File-path constants
@@ -31,6 +31,7 @@ MAX_SAFE_PATH = 240
 # 1. UI / Domain constants
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CIRCLE_NUMS = "①②③④⑤"
+ALPHA_CHOICES = ["A", "B", "C", "D", "E"]
 
 SUBJECT_LIST = [
     "경제", "사회·문화", "생활과 윤리", "윤리와 사상",
@@ -175,128 +176,3 @@ def _safe_basename(folder, stem, ext):
 def build_paths(target_dir, base_filename, prefix=""):
     stem = _safe_basename(target_dir, f"{prefix}{base_filename}", ".docx")
     return os.path.join(target_dir, stem + ".docx"), os.path.join(target_dir, stem + ".pdf")
-
-
-def convert_docx_pairs_to_pdf(pairs):
-    """Convert a list of (docx_path, pdf_target_path) pairs using docx2pdf."""
-    try:
-        from docx2pdf import convert as docx2pdf_convert
-    except ImportError:
-        return
-    tmp_dir = tempfile.mkdtemp(prefix="exam_pdf_")
-    mapping = []
-    try:
-        for idx, (dx, px) in enumerate(pairs, 1):
-            if not os.path.exists(dx):
-                continue
-            tmp_dx = os.path.join(tmp_dir, f"file{idx}.docx")
-            tmp_px = os.path.join(tmp_dir, f"file{idx}.pdf")
-            shutil.copy2(dx, tmp_dx)
-            mapping.append((tmp_px, px))
-        docx2pdf_convert(tmp_dir)
-        for tmp_px, target_px in mapping:
-            if os.path.exists(tmp_px):
-                os.makedirs(os.path.dirname(target_px), exist_ok=True)
-                shutil.copy2(tmp_px, target_px)
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 5. Draft (auto-save) helpers
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-def save_draft(exam_text, ans_text, title):
-    try:
-        with open(DRAFT_FILE, "w", encoding="utf-8") as f:
-            json.dump({"exam": exam_text, "answer": ans_text, "title": title,
-                        "saved_at": datetime.datetime.now().isoformat()}, f, ensure_ascii=False)
-    except OSError:
-        pass
-
-
-def load_draft():
-    if not os.path.exists(DRAFT_FILE):
-        return None
-    try:
-        with open(DRAFT_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return None
-
-
-def clear_draft():
-    if os.path.exists(DRAFT_FILE):
-        try:
-            os.remove(DRAFT_FILE)
-        except OSError:
-            pass
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 6. History helpers
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-def add_history(entry):
-    history = []
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                history = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            pass
-    history.insert(0, {**entry, "timestamp": datetime.datetime.now().isoformat()})
-    history = history[:50]
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(history, f, ensure_ascii=False, indent=2)
-
-
-def load_history():
-    if not os.path.exists(HISTORY_FILE):
-        return []
-    try:
-        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return []
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 7. Question-bank (JSON flat-file) helpers
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-def save_to_qbank(questions, tag="", answers_map=None):
-    """Append parsed questions to the JSON question bank.
-    answers_map: {original_num: answer_text} dict (optional)
-    """
-    bank = []
-    if os.path.exists(QBANK_FILE):
-        try:
-            with open(QBANK_FILE, "r", encoding="utf-8") as f:
-                bank = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            pass
-    ts = datetime.datetime.now().isoformat()
-    if answers_map is None:
-        answers_map = {}
-    for q in questions:
-        entry = {**q, "saved_at": ts, "tag": tag}
-        q_num = q.get("num", "")
-        ans_text = answers_map.get(q_num, "")
-        entry["answer"] = ans_text
-        bank.append(entry)
-    with open(QBANK_FILE, "w", encoding="utf-8") as f:
-        json.dump(bank, f, ensure_ascii=False, indent=2)
-    return len(questions)
-
-
-def load_qbank():
-    if not os.path.exists(QBANK_FILE):
-        return []
-    try:
-        with open(QBANK_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return []
-
-
-def clear_qbank():
-    if os.path.exists(QBANK_FILE):
-        os.remove(QBANK_FILE)

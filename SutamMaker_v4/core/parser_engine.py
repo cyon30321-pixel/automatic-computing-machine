@@ -7,7 +7,7 @@ No Tkinter / docx / matplotlib dependencies.
 
 import re
 
-from SutamMaker_v4.config import CIRCLE_NUMS
+from config import CIRCLE_NUMS
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

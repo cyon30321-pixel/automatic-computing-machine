@@ -8,6 +8,8 @@ No Tkinter dependencies.
 
 import os
 import re
+import shutil
+import tempfile
 import datetime
 
 import docx
@@ -17,8 +19,36 @@ from docx.enum.section import WD_SECTION
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
-from SutamMaker_v4.config import CIRCLE_NUMS, build_paths
-from SutamMaker_v4.core.graph_engine import process_and_draw_graph
+from config import CIRCLE_NUMS, build_paths
+from core.graph_engine import process_and_draw_graph
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# PDF conversion helper
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def convert_docx_pairs_to_pdf(pairs):
+    """Convert a list of (docx_path, pdf_target_path) pairs using docx2pdf."""
+    try:
+        from docx2pdf import convert as docx2pdf_convert
+    except ImportError:
+        return
+    tmp_dir = tempfile.mkdtemp(prefix="exam_pdf_")
+    mapping = []
+    try:
+        for idx, (dx, px) in enumerate(pairs, 1):
+            if not os.path.exists(dx):
+                continue
+            tmp_dx = os.path.join(tmp_dir, f"file{idx}.docx")
+            tmp_px = os.path.join(tmp_dir, f"file{idx}.pdf")
+            shutil.copy2(dx, tmp_dx)
+            mapping.append((tmp_px, px))
+        docx2pdf_convert(tmp_dir)
+        for tmp_px, target_px in mapping:
+            if os.path.exists(tmp_px):
+                os.makedirs(os.path.dirname(target_px), exist_ok=True)
+                shutil.copy2(tmp_px, target_px)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
