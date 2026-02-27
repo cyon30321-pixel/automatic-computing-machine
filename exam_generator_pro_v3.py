@@ -45,6 +45,8 @@ try:
 except ImportError:
     docx2pdf_convert = None
 
+import exam_db
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 0. AI MASTER PROMPT
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -192,7 +194,12 @@ def load_config():
                 return json.load(f)
         except (json.JSONDecodeError, OSError):
             pass
-    return {"last_dir": SCRIPT_DIR, "last_logo": "", "font_name": "맑은 고딕", "font_size": "10"}
+    return {
+        "last_dir": SCRIPT_DIR, "last_logo": "", "font_name": "맑은 고딕", "font_size": "10",
+        "db_root": os.path.join(SCRIPT_DIR, "db"),
+        "academy_name": "", "exam_name": "", "contact_info": "", "copyright_text": "",
+        "show_page_number": False, "show_date": False,
+    }
 
 
 def save_config(cfg):
@@ -690,6 +697,92 @@ def _add_header_footer(doc, header_text="", footer_text=""):
             fr.font.color.rgb = RGBColor(150, 150, 150)
 
 
+def _add_page_number_field(paragraph, font_size_pt=8, font_color_hex="969696"):
+    """w:fldSimple을 사용해 실제 페이지 번호 필드를 삽입."""
+    prefix_run = paragraph.add_run("Page ")
+    prefix_run.font.size = Pt(font_size_pt)
+    prefix_run.font.color.rgb = RGBColor(
+        int(font_color_hex[0:2], 16),
+        int(font_color_hex[2:4], 16),
+        int(font_color_hex[4:6], 16),
+    )
+
+    fld = OxmlElement("w:fldSimple")
+    fld.set(qn("w:instr"), " PAGE \\* MERGEFORMAT ")
+    r = OxmlElement("w:r")
+    rPr = OxmlElement("w:rPr")
+    sz = OxmlElement("w:sz")
+    sz.set(qn("w:val"), str(font_size_pt * 2))
+    rPr.append(sz)
+    szCs = OxmlElement("w:szCs")
+    szCs.set(qn("w:val"), str(font_size_pt * 2))
+    rPr.append(szCs)
+    color_el = OxmlElement("w:color")
+    color_el.set(qn("w:val"), font_color_hex)
+    rPr.append(color_el)
+    r.append(rPr)
+    t = OxmlElement("w:t")
+    t.text = "1"
+    r.append(t)
+    fld.append(r)
+    paragraph._element.append(fld)
+
+
+def _add_header_footer_v2(doc, hf_config, logo_path=""):
+    """향상된 머리글/바닥글 — 커스텀 필드 + OxmlElement 기반 페이지 번호.
+    모든 section(continuous 포함)에 적용."""
+    academy = hf_config.get("academy_name", "")
+    exam_name = hf_config.get("exam_name", "")
+    contact = hf_config.get("contact_info", "")
+    copyright_text = hf_config.get("copyright_text", "")
+    show_page = hf_config.get("show_page_number", False)
+    show_date = hf_config.get("show_date", False)
+
+    date_str = datetime.datetime.now().strftime("%Y-%m-%d") if show_date else ""
+    header_parts = [p for p in [academy, exam_name, date_str] if p]
+    header_text = " | ".join(header_parts)
+    footer_parts = [p for p in [copyright_text, contact] if p]
+    footer_text = " | ".join(footer_parts)
+
+    has_header = bool(header_text) or show_page
+    has_footer = bool(footer_text) or show_page
+
+    for section in doc.sections:
+        if has_header:
+            h = section.header
+            h.is_linked_to_previous = False
+            hp = h.paragraphs[0] if h.paragraphs else h.add_paragraph()
+            hp.clear()
+            hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            if header_text:
+                hr = hp.add_run(header_text)
+                hr.font.size = Pt(8)
+                hr.font.color.rgb = RGBColor(150, 150, 150)
+            if show_page:
+                if header_text:
+                    sep = hp.add_run(" | ")
+                    sep.font.size = Pt(8)
+                    sep.font.color.rgb = RGBColor(150, 150, 150)
+                _add_page_number_field(hp, 8, "969696")
+
+        if has_footer:
+            f = section.footer
+            f.is_linked_to_previous = False
+            fp = f.paragraphs[0] if f.paragraphs else f.add_paragraph()
+            fp.clear()
+            fp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            if footer_text:
+                fr = fp.add_run(footer_text)
+                fr.font.size = Pt(8)
+                fr.font.color.rgb = RGBColor(150, 150, 150)
+            if show_page:
+                if footer_text:
+                    sep = fp.add_run(" | ")
+                    sep.font.size = Pt(8)
+                    sep.font.color.rgb = RGBColor(150, 150, 150)
+                _add_page_number_field(fp, 8, "969696")
+
+
 def _tight_para(doc, left_indent=None, space_before=0, space_after=0):
     p = doc.add_paragraph()
     pf = p.paragraph_format
@@ -714,13 +807,15 @@ def _tight_table_cell(cell, font_size=None):
 
 def create_exam_docx(target_dir, filename, exam_data, font_name, font_size,
                      logo_path, title, watermark="", header="", footer="",
-                     numbering_start=1):
+                     numbering_start=1, hf_config=None):
     fs = int(font_size)
     doc = docx.Document()
     _apply_doc_style(doc, font_name, font_size)
     if watermark:
         _add_watermark(doc, watermark)
-    if header or footer:
+    if hf_config and any(hf_config.get(k) for k in ("academy_name", "exam_name", "show_page_number", "show_date", "copyright_text", "contact_info")):
+        _add_header_footer_v2(doc, hf_config, logo_path=logo_path)
+    elif header or footer:
         _add_header_footer(doc, header, footer)
 
     if logo_path and os.path.exists(logo_path):
@@ -848,9 +943,11 @@ def create_exam_docx(target_dir, filename, exam_data, font_name, font_size,
 
 
 def create_answer_docx(target_dir, filename, raw_ans, exam_data, font_name, font_size,
-                       logo_path, title, numbering_start=1):
+                       logo_path, title, numbering_start=1, hf_config=None):
     doc = docx.Document()
     _apply_doc_style(doc, font_name, font_size)
+    if hf_config and any(hf_config.get(k) for k in ("academy_name", "exam_name", "show_page_number", "show_date", "copyright_text", "contact_info")):
+        _add_header_footer_v2(doc, hf_config, logo_path=logo_path)
 
     if logo_path and os.path.exists(logo_path):
         lp = _tight_para(doc, space_after=2)
@@ -1010,6 +1107,291 @@ def _clear_draft():
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 8. 메인 앱
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+class QuestionBankWindow(tk.Toplevel):
+    """문제은행 브라우저 — 검색, 정답/해설 편집, 시험지 생성."""
+
+    def __init__(self, master, db_root, on_generate_callback=None):
+        super().__init__(master)
+        self.title("문제은행 브라우저")
+        self.geometry("1250x820")
+        self.db_root = db_root
+        self.on_generate = on_generate_callback
+        self.current_item = None
+        self.answer_vars = []
+        self.explanation_widgets = []
+        self._editor_widgets = []
+        self._build_ui()
+        self._refresh_list()
+
+    # ── UI 구축 ──
+    def _build_ui(self):
+        # 상단 검색바
+        top = tk.Frame(self)
+        top.pack(fill="x", padx=10, pady=6)
+        tk.Label(top, text="검색:", font=("맑은 고딕", 10)).pack(side="left")
+        self.ent_search = tk.Entry(top, width=35, font=("맑은 고딕", 10))
+        self.ent_search.pack(side="left", padx=4)
+        self.ent_search.bind("<Return>", lambda e: self._do_search())
+        tk.Button(top, text="검색", bg="#2563eb", fg="white",
+                  font=("맑은 고딕", 9, "bold"), command=self._do_search).pack(side="left", padx=2)
+        tk.Button(top, text="전체 보기", command=lambda: self._refresh_list()).pack(side="left", padx=2)
+        tk.Button(top, text="인덱스 재생성", bg="#6366f1", fg="white",
+                  font=("맑은 고딕", 9), command=self._rebuild_index).pack(side="left", padx=6)
+        self.lbl_count = tk.Label(top, text="", font=("맑은 고딕", 9), fg="#64748b")
+        self.lbl_count.pack(side="right", padx=8)
+
+        # PanedWindow — 좌(리스트) / 우(편집기)
+        pw = tk.PanedWindow(self, orient=tk.HORIZONTAL, sashwidth=6)
+        pw.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+
+        # 좌: Treeview
+        left = tk.Frame(pw)
+        pw.add(left, width=520, minsize=300)
+        cols = ("ID", "제목", "태그", "수정일", "문항수")
+        self.tree = ttk.Treeview(left, columns=cols, show="headings", height=28, selectmode="extended")
+        for c, w in zip(cols, [110, 140, 100, 100, 55]):
+            self.tree.heading(c, text=c)
+            self.tree.column(c, width=w, minwidth=40)
+        vsb = tk.Scrollbar(left, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        self.tree.pack(fill="both", expand=True)
+        self.tree.bind("<<TreeviewSelect>>", self._on_select)
+
+        # 우: 편집 영역
+        right = tk.Frame(pw)
+        pw.add(right, minsize=400)
+
+        # 제시문 (passage)
+        lf_pass = tk.LabelFrame(right, text=" 제시문 (Passage) ", font=("맑은 고딕", 9, "bold"))
+        lf_pass.pack(fill="x", padx=6, pady=(4, 2))
+        self.txt_passage = tk.Text(lf_pass, height=4, font=("Consolas", 9), bg="#f8fafc", state="disabled", wrap=tk.WORD)
+        self.txt_passage.pack(fill="x", padx=4, pady=4)
+
+        # 문항 편집 (스크롤 가능)
+        lf_q = tk.LabelFrame(right, text=" 문항 편집 ", font=("맑은 고딕", 9, "bold"))
+        lf_q.pack(fill="both", expand=True, padx=6, pady=2)
+
+        canvas = tk.Canvas(lf_q, bg="#ffffff", highlightthickness=0)
+        vsb2 = tk.Scrollbar(lf_q, orient="vertical", command=canvas.yview)
+        self.q_frame = tk.Frame(canvas, bg="#ffffff")
+        self.q_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=self.q_frame, anchor="nw")
+        canvas.configure(yscrollcommand=vsb2.set)
+        vsb2.pack(side="right", fill="y")
+        canvas.pack(fill="both", expand=True)
+        # 마우스 휠 스크롤
+        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+
+        # 태그 표시
+        tag_row = tk.Frame(right)
+        tag_row.pack(fill="x", padx=6, pady=2)
+        tk.Label(tag_row, text="태그:", font=("맑은 고딕", 9, "bold")).pack(side="left")
+        self.lbl_tags = tk.Label(tag_row, text="", font=("맑은 고딕", 9), fg="#059669")
+        self.lbl_tags.pack(side="left", padx=4)
+
+        # 하단 버튼
+        bottom = tk.Frame(self)
+        bottom.pack(fill="x", padx=10, pady=8)
+        tk.Button(bottom, text="저장", bg="#16a34a", fg="white",
+                  font=("맑은 고딕", 10, "bold"), width=10, command=self._save_current).pack(side="left", padx=4)
+        tk.Button(bottom, text="태그 수정", bg="#7c3aed", fg="white",
+                  font=("맑은 고딕", 10, "bold"), width=10, command=self._edit_tags).pack(side="left", padx=4)
+        tk.Button(bottom, text="삭제", bg="#dc2626", fg="white",
+                  font=("맑은 고딕", 10, "bold"), width=10, command=self._delete_selected).pack(side="left", padx=4)
+        tk.Button(bottom, text="시험지 생성", bg="#ea580c", fg="white",
+                  font=("맑은 고딕", 10, "bold"), width=14, command=self._generate_from_selected).pack(side="right", padx=4)
+        tk.Button(bottom, text="JSON Export", bg="#0891b2", fg="white",
+                  font=("맑은 고딕", 10, "bold"), width=14, command=self._export_selected).pack(side="right", padx=4)
+
+    # ── 리스트 ──
+    def _refresh_list(self, query=""):
+        for c in self.tree.get_children():
+            self.tree.delete(c)
+        if query:
+            ids = exam_db.search_items(self.db_root, query)
+        else:
+            ids = exam_db.search_items(self.db_root, "")
+        index = exam_db.load_index(self.db_root)
+        for iid in ids:
+            entry = index.get("items", {}).get(iid, {})
+            self.tree.insert("", "end", iid=iid, values=(
+                iid,
+                entry.get("source_title", "")[:25],
+                ", ".join(entry.get("tags", []))[:20],
+                entry.get("updated_at", "")[:10],
+                entry.get("question_count", 0),
+            ))
+        self.lbl_count.config(text=f"결과: {len(ids)}건")
+
+    def _do_search(self):
+        q = self.ent_search.get().strip()
+        self._refresh_list(q)
+
+    # ── 선택 → 편집기 로드 ──
+    def _on_select(self, event=None):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        item_id = sel[0]
+        item = exam_db.load_item(self.db_root, item_id)
+        if not item:
+            return
+        self.current_item = item
+        self._load_editor(item)
+
+    def _load_editor(self, item):
+        # 제시문
+        self.txt_passage.config(state="normal")
+        self.txt_passage.delete("1.0", tk.END)
+        self.txt_passage.insert("1.0", item.get("passage", "") or "(없음)")
+        self.txt_passage.config(state="disabled")
+        # 태그
+        self.lbl_tags.config(text=", ".join(item.get("tags", [])) or "(없음)")
+
+        # 기존 위젯 정리
+        for w in self._editor_widgets:
+            w.destroy()
+        self._editor_widgets.clear()
+        self.answer_vars.clear()
+        self.explanation_widgets.clear()
+
+        questions = item.get("questions", [])
+        for idx, q in enumerate(questions):
+            c_type = q.get("c_type", "num")
+            frame = tk.Frame(self.q_frame, bg="#ffffff", bd=1, relief="groove")
+            frame.pack(fill="x", padx=4, pady=4)
+            self._editor_widgets.append(frame)
+
+            # 문항 헤더
+            hdr = tk.Label(frame, text=f"문항 {idx+1}  (원본#{q.get('num', '?')})",
+                           font=("맑은 고딕", 9, "bold"), bg="#eff6ff", anchor="w")
+            hdr.pack(fill="x", padx=4, pady=(4, 2))
+
+            # 본문
+            txt_lbl = tk.Label(frame, text=q.get("text", "")[:200],
+                               font=("맑은 고딕", 9), wraplength=550, justify="left", bg="#ffffff", anchor="w")
+            txt_lbl.pack(fill="x", padx=8, pady=2)
+
+            # 선지
+            choices = q.get("choices", [])
+            for ci, ch in enumerate(choices):
+                if ch:
+                    mark = CIRCLE_NUMS[ci] if c_type == "num" else ALPHA_CHOICES[ci] if ci < 5 else ""
+                    clbl = tk.Label(frame, text=f"  {mark} {ch}",
+                                    font=("맑은 고딕", 8), bg="#ffffff", anchor="w", fg="#475569")
+                    clbl.pack(fill="x", padx=12)
+
+            # 정답 Combobox
+            ans_frame = tk.Frame(frame, bg="#ffffff")
+            ans_frame.pack(fill="x", padx=8, pady=2)
+            tk.Label(ans_frame, text="정답:", font=("맑은 고딕", 9, "bold"), bg="#ffffff").pack(side="left")
+            if c_type == "alpha":
+                ans_values = ["", "A", "B", "C", "D", "E"]
+            else:
+                ans_values = ["", "①", "②", "③", "④", "⑤"]
+            ans_var = tk.StringVar(value=q.get("answer") or "")
+            ans_cb = ttk.Combobox(ans_frame, textvariable=ans_var, values=ans_values,
+                                  width=6, state="readonly")
+            ans_cb.pack(side="left", padx=4)
+            self.answer_vars.append(ans_var)
+
+            # 해설 Text
+            tk.Label(ans_frame, text="해설:", font=("맑은 고딕", 9, "bold"), bg="#ffffff").pack(side="left", padx=(12, 0))
+            expl_txt = tk.Text(frame, height=2, font=("맑은 고딕", 9), wrap=tk.WORD)
+            expl_txt.pack(fill="x", padx=8, pady=(0, 4))
+            expl_txt.insert("1.0", q.get("explanation") or "")
+            self.explanation_widgets.append(expl_txt)
+
+    # ── 저장 ──
+    def _save_current(self):
+        if not self.current_item:
+            return messagebox.showwarning("알림", "편집할 아이템을 선택하세요.", parent=self)
+        item = self.current_item
+        questions = item.get("questions", [])
+        for idx, q in enumerate(questions):
+            if idx < len(self.answer_vars):
+                raw_ans = self.answer_vars[idx].get()
+                q["answer"] = exam_db.validate_answer(raw_ans, q.get("c_type", "num"))
+                if raw_ans and q["answer"] is None and raw_ans.strip():
+                    messagebox.showwarning("정답 오류",
+                                           f"문항 {idx+1}: '{raw_ans}'은(는) 유효하지 않은 정답입니다.",
+                                           parent=self)
+            if idx < len(self.explanation_widgets):
+                q["explanation"] = self.explanation_widgets[idx].get("1.0", tk.END).strip() or None
+        exam_db.save_item(self.db_root, item)
+        exam_db.update_index_entry(self.db_root, item)
+        self._refresh_list(self.ent_search.get().strip())
+        messagebox.showinfo("저장", "정답/해설이 저장되었습니다.", parent=self)
+
+    # ── 태그 수정 ──
+    def _edit_tags(self):
+        if not self.current_item:
+            return messagebox.showwarning("알림", "아이템을 선택하세요.", parent=self)
+        current = ", ".join(self.current_item.get("tags", []))
+        new_tags = simpledialog.askstring("태그 수정", f"태그 (쉼표 구분):\n현재: {current}",
+                                          initialvalue=current, parent=self)
+        if new_tags is None:
+            return
+        self.current_item["tags"] = [t.strip() for t in new_tags.split(",") if t.strip()]
+        exam_db.save_item(self.db_root, self.current_item)
+        exam_db.update_index_entry(self.db_root, self.current_item)
+        self.lbl_tags.config(text=", ".join(self.current_item["tags"]) or "(없음)")
+        self._refresh_list(self.ent_search.get().strip())
+
+    # ── 삭제 ──
+    def _delete_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            return messagebox.showwarning("알림", "삭제할 아이템을 선택하세요.", parent=self)
+        if not messagebox.askyesno("확인", f"{len(sel)}개 아이템을 삭제하시겠습니까?", parent=self):
+            return
+        for iid in sel:
+            exam_db.delete_item(self.db_root, iid)
+            exam_db.remove_index_entry(self.db_root, iid)
+        self.current_item = None
+        self._refresh_list(self.ent_search.get().strip())
+
+    # ── 시험지 생성 (선택한 아이템으로) ──
+    def _generate_from_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            return messagebox.showwarning("알림", "시험지를 생성할 아이템을 선택하세요.", parent=self)
+        items = [exam_db.load_item(self.db_root, iid) for iid in sel]
+        items = [it for it in items if it]
+        if not items:
+            return
+        if self.on_generate:
+            self.on_generate(items)
+            self.destroy()
+
+    # ── JSON Export ──
+    def _export_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            return messagebox.showwarning("알림", "Export할 아이템을 선택하세요.", parent=self)
+        items = [exam_db.load_item(self.db_root, iid) for iid in sel]
+        items = [it for it in items if it]
+        if not items:
+            return
+        target_dir = filedialog.askdirectory(title="Export 저장 폴더", parent=self)
+        if not target_dir:
+            return
+        title = simpledialog.askstring("제목", "Export 파일명:", initialvalue="exam_export", parent=self)
+        if not title:
+            return
+        path = exam_db.export_from_db_items(items, target_dir, title,
+                                             display_title=title)
+        messagebox.showinfo("Export 완료", f"저장: {path}", parent=self)
+
+    # ── 인덱스 재생성 ──
+    def _rebuild_index(self):
+        idx = exam_db.build_index(self.db_root)
+        cnt = len(idx.get("items", {}))
+        self._refresh_list(self.ent_search.get().strip())
+        messagebox.showinfo("완료", f"인덱스 재생성: {cnt}개 아이템", parent=self)
+
+
 class SutamMakerApp:
     def __init__(self, root):
         self.root = root
@@ -1040,18 +1422,21 @@ class SutamMakerApp:
         self.tab_qbank = ttk.Frame(self.tabs)
         self.tab_history = ttk.Frame(self.tabs)
         self.tab_ai = ttk.Frame(self.tabs)
+        self.tab_db = ttk.Frame(self.tabs)
 
         self.tabs.add(self.tab_main, text="  시험지 생성  ")
         self.tabs.add(self.tab_preview, text="  미리보기  ")
         self.tabs.add(self.tab_qbank, text="  문제 은행  ")
         self.tabs.add(self.tab_history, text="  생성 히스토리  ")
         self.tabs.add(self.tab_ai, text="  AI 명령어  ")
+        self.tabs.add(self.tab_db, text="  DB 도구  ")
 
         self._build_main_tab()
         self._build_preview_tab()
         self._build_qbank_tab()
         self._build_history_tab()
         self._build_ai_tab()
+        self._build_db_tab()
         self._update_status()
 
     def _bind_shortcuts(self):
@@ -1571,6 +1956,211 @@ class SutamMakerApp:
         parsed = parse_exam_text(exam_part)
         self._set_status(f"AI 결과 붙여넣기 완료: {len(parsed)}문항 감지, 답안지 {'있음' if ans_part else '없음'}")
 
+    # --- TAB 6: DB 도구 ---
+    def _build_db_tab(self):
+        # DB 폴더 설정
+        lf_folder = tk.LabelFrame(self.tab_db, text=" DB 폴더 설정 ", font=("맑은 고딕", 10, "bold"))
+        lf_folder.pack(fill="x", padx=12, pady=6)
+        r0 = tk.Frame(lf_folder)
+        r0.pack(fill="x", padx=8, pady=4)
+        tk.Label(r0, text="DB 폴더:", width=10, anchor="w").pack(side="left")
+        self.db_dir_var = tk.StringVar(value=self.cfg.get("db_root", os.path.join(SCRIPT_DIR, "db")))
+        tk.Entry(r0, textvariable=self.db_dir_var, width=45).pack(side="left", padx=4)
+        tk.Button(r0, text="찾아보기", command=self._browse_db_dir).pack(side="left", padx=2)
+
+        # DB 작업 버튼
+        lf_actions = tk.LabelFrame(self.tab_db, text=" DB 작업 ", font=("맑은 고딕", 10, "bold"))
+        lf_actions.pack(fill="x", padx=12, pady=6)
+        bf = tk.Frame(lf_actions)
+        bf.pack(padx=8, pady=8)
+        tk.Button(bf, text="DB 저장\n(파싱 결과 저장)", bg="#16a34a", fg="white",
+                  font=("맑은 고딕", 10, "bold"), width=16, height=3,
+                  command=self._save_to_db).pack(side="left", padx=6)
+        tk.Button(bf, text="문제은행\n(브라우저 열기)", bg="#2563eb", fg="white",
+                  font=("맑은 고딕", 10, "bold"), width=16, height=3,
+                  command=self._open_qbank_window).pack(side="left", padx=6)
+        tk.Button(bf, text="DB 백업\n(zip 생성)", bg="#7c3aed", fg="white",
+                  font=("맑은 고딕", 10, "bold"), width=16, height=3,
+                  command=self._backup_db).pack(side="left", padx=6)
+        tk.Button(bf, text="DB 복원\n(zip에서)", bg="#dc2626", fg="white",
+                  font=("맑은 고딕", 10, "bold"), width=16, height=3,
+                  command=self._restore_db).pack(side="left", padx=6)
+        tk.Button(bf, text="JSON Export\n(시험지 JSON)", bg="#0891b2", fg="white",
+                  font=("맑은 고딕", 10, "bold"), width=16, height=3,
+                  command=self._export_json).pack(side="left", padx=6)
+
+        # 머리글/바닥글 설정
+        lf_hf = tk.LabelFrame(self.tab_db, text=" 머리글 / 바닥글 설정 (DOCX 적용) ", font=("맑은 고딕", 10, "bold"))
+        lf_hf.pack(fill="x", padx=12, pady=6)
+
+        r1 = tk.Frame(lf_hf)
+        r1.pack(fill="x", padx=8, pady=2)
+        tk.Label(r1, text="학원명:", width=10, anchor="w").pack(side="left")
+        self.hf_academy = tk.Entry(r1, width=30)
+        self.hf_academy.pack(side="left", padx=4)
+        self.hf_academy.insert(0, self.cfg.get("academy_name", ""))
+        tk.Label(r1, text="시험명:", width=8, anchor="w").pack(side="left", padx=(8, 0))
+        self.hf_exam = tk.Entry(r1, width=25)
+        self.hf_exam.pack(side="left", padx=4)
+        self.hf_exam.insert(0, self.cfg.get("exam_name", ""))
+
+        r2 = tk.Frame(lf_hf)
+        r2.pack(fill="x", padx=8, pady=2)
+        tk.Label(r2, text="연락처:", width=10, anchor="w").pack(side="left")
+        self.hf_contact = tk.Entry(r2, width=30)
+        self.hf_contact.pack(side="left", padx=4)
+        self.hf_contact.insert(0, self.cfg.get("contact_info", ""))
+        tk.Label(r2, text="저작권:", width=8, anchor="w").pack(side="left", padx=(8, 0))
+        self.hf_copyright = tk.Entry(r2, width=25)
+        self.hf_copyright.pack(side="left", padx=4)
+        self.hf_copyright.insert(0, self.cfg.get("copyright_text", ""))
+
+        r3 = tk.Frame(lf_hf)
+        r3.pack(fill="x", padx=8, pady=4)
+        self.hf_page_var = tk.BooleanVar(value=self.cfg.get("show_page_number", False))
+        tk.Checkbutton(r3, text="페이지 번호 표시 (Page X)", variable=self.hf_page_var).pack(side="left", padx=(76, 10))
+        self.hf_date_var = tk.BooleanVar(value=self.cfg.get("show_date", False))
+        tk.Checkbutton(r3, text="날짜 표시", variable=self.hf_date_var).pack(side="left", padx=10)
+        tk.Button(r3, text="설정 저장", bg="#475569", fg="white",
+                  font=("맑은 고딕", 9, "bold"), command=self._save_hf_config).pack(side="right", padx=8)
+
+        # 미리보기 안내
+        info = tk.Label(self.tab_db,
+                        text="머리글 예시: 학원명 | 시험명 | 날짜 | Page X\n바닥글 예시: 저작권 | 연락처 | Page X\n(설정 저장 후 시험지 생성 시 자동 적용됩니다)",
+                        font=("맑은 고딕", 9), fg="#64748b", bg="#f1f5f9", relief="groove", padx=8, pady=6, justify="left")
+        info.pack(fill="x", padx=12, pady=(0, 6))
+
+    # --- DB 작업 메서드 ---
+    def _get_db_root(self):
+        return self.db_dir_var.get() if hasattr(self, "db_dir_var") else self.cfg.get("db_root", os.path.join(SCRIPT_DIR, "db"))
+
+    def _browse_db_dir(self):
+        d = filedialog.askdirectory(title="DB 폴더 선택")
+        if d:
+            self.db_dir_var.set(d)
+            self.cfg["db_root"] = d
+            save_config(self.cfg)
+
+    def _save_hf_config(self):
+        self.cfg["academy_name"] = self.hf_academy.get().strip()
+        self.cfg["exam_name"] = self.hf_exam.get().strip()
+        self.cfg["contact_info"] = self.hf_contact.get().strip()
+        self.cfg["copyright_text"] = self.hf_copyright.get().strip()
+        self.cfg["show_page_number"] = self.hf_page_var.get()
+        self.cfg["show_date"] = self.hf_date_var.get()
+        self.cfg["db_root"] = self.db_dir_var.get()
+        save_config(self.cfg)
+        self._set_status("머리글/바닥글 설정 저장 완료")
+
+    def _get_hf_config(self):
+        return {
+            "academy_name": self.cfg.get("academy_name", ""),
+            "exam_name": self.cfg.get("exam_name", ""),
+            "contact_info": self.cfg.get("contact_info", ""),
+            "copyright_text": self.cfg.get("copyright_text", ""),
+            "show_page_number": self.cfg.get("show_page_number", False),
+            "show_date": self.cfg.get("show_date", False),
+        }
+
+    def _save_to_db(self):
+        raw = self.txt_exam.get("1.0", tk.END).strip()
+        if not raw:
+            return messagebox.showwarning("경고", "문제 텍스트를 먼저 입력하세요.")
+        parsed = parse_exam_text(raw)
+        if not parsed:
+            return messagebox.showerror("오류", "파싱된 문제가 없습니다.")
+        title = self.ent_title.get().strip() or "untitled"
+        tag_str = simpledialog.askstring("태그", "저장 태그 (쉼표 구분):", initialvalue="", parent=self.root)
+        if tag_str is None:
+            return
+        tags = [t.strip() for t in tag_str.split(",") if t.strip()]
+        db_root = self._get_db_root()
+        items = exam_db.parsed_to_db_items(parsed, source_title=title, tags=tags)
+        for item in items:
+            exam_db.save_item(db_root, item)
+            exam_db.update_index_entry(db_root, item)
+        q_total = sum(len(it.get("questions", [])) for it in items)
+        messagebox.showinfo("DB 저장", f"{len(items)}개 아이템 ({q_total}문항) 저장 완료\nDB: {db_root}")
+        self._set_status(f"DB 저장: {q_total}문항 → {db_root}")
+
+    def _open_qbank_window(self):
+        db_root = self._get_db_root()
+        exam_db.ensure_db_dirs(db_root)
+
+        def on_generate_from_db(items):
+            exam_data = exam_db.db_items_to_exam_data(items)
+            ans_text = exam_db.db_items_to_answer_text(items)
+            self.txt_exam.delete("1.0", tk.END)
+            # 재구성된 텍스트 형식으로 입력
+            lines = []
+            for q in exam_data:
+                body = f"{q['num']}. {q['text']}"
+                if q.get("jesi"):
+                    body += f"\n<제시문>{q['jesi']}</제시문>"
+                if q.get("graph_tag"):
+                    body += f"\n{q['graph_tag']}"
+                if q.get("bogi"):
+                    body += f"\n<보기>\n{q['bogi']}"
+                if q.get("choices"):
+                    for j, ch in enumerate(q["choices"]):
+                        if ch:
+                            body += f"\n{CIRCLE_NUMS[j]} {ch}"
+                lines.append(body)
+            self.txt_exam.insert("1.0", "\n\n".join(lines))
+            self.txt_ans.delete("1.0", tk.END)
+            self.txt_ans.insert("1.0", ans_text)
+            self.tabs.select(self.tab_main)
+            self._set_status(f"DB에서 {len(exam_data)}문항 불러옴")
+
+        QuestionBankWindow(self.root, db_root, on_generate_callback=on_generate_from_db)
+
+    def _backup_db(self):
+        db_root = self._get_db_root()
+        try:
+            path = exam_db.create_backup(db_root, CONFIG_FILE)
+            messagebox.showinfo("백업 완료", f"백업 저장: {path}")
+            self._set_status(f"DB 백업 완료: {path}")
+        except Exception as e:
+            messagebox.showerror("백업 오류", str(e))
+
+    def _restore_db(self):
+        db_root = self._get_db_root()
+        zip_path = filedialog.askopenfilename(
+            title="백업 zip 선택",
+            filetypes=[("Zip", "*.zip")],
+            initialdir=os.path.join(db_root, "backups"),
+        )
+        if not zip_path:
+            return
+        if not messagebox.askyesno("확인", f"복원하시겠습니까?\n기존 데이터는 안전 복사됩니다.\n\n{zip_path}"):
+            return
+        try:
+            safety = exam_db.restore_backup(db_root, zip_path)
+            exam_db.build_index(db_root)
+            messagebox.showinfo("복원 완료", f"복원 완료!\n안전 복사: {safety}")
+            self._set_status("DB 복원 완료")
+        except Exception as e:
+            messagebox.showerror("복원 오류", str(e))
+
+    def _export_json(self):
+        raw = self.txt_exam.get("1.0", tk.END).strip()
+        if not raw:
+            return messagebox.showwarning("경고", "문제 텍스트를 먼저 입력하세요.")
+        parsed = parse_exam_text(raw)
+        if not parsed:
+            return messagebox.showerror("오류", "파싱된 문제가 없습니다.")
+        target_dir = self.dir_var.get()
+        title = self.ent_title.get().strip() or "exam"
+        today = datetime.datetime.now().strftime("%Y%m%d")
+        filename = f"{title}_{today}"
+        try:
+            path = exam_db.export_exam_json(parsed, target_dir, filename,
+                                             display_title=title)
+            messagebox.showinfo("Export 완료", f"저장: {path}")
+            self._set_status(f"JSON Export: {path}")
+        except Exception as e:
+            messagebox.showerror("오류", str(e))
+
     # --- 핵심: 생성 로직 ---
     def _get_target_dir(self, student_name=""):
         base = self.dir_var.get()
@@ -1616,16 +2206,18 @@ class SutamMakerApp:
                 fn = f"{student}_{filename_base}" if student else filename_base
                 header_txt = f"{student} | {display_title}" if student else display_title
                 footer_txt = datetime.datetime.now().strftime("%Y-%m-%d")
+                hf_cfg = self._get_hf_config() if hasattr(self, "_get_hf_config") else None
                 exam_dx, exam_px = create_exam_docx(
                     target_dir, fn, data, font_n, font_s, logo,
                     display_title, watermark=watermark,
                     header=header_txt, footer=footer_txt,
+                    hf_config=hf_cfg,
                 )
                 ans_dx, ans_px = None, None
                 if raw_ans:
                     ans_dx, ans_px = create_answer_docx(
                         target_dir, fn, raw_ans, data, font_n, font_s,
-                        logo, display_title,
+                        logo, display_title, hf_config=hf_cfg,
                     )
                 if fmt in ("pdf", "both"):
                     pairs = [(exam_dx, exam_px)]
