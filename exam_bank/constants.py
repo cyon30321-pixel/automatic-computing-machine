@@ -1,0 +1,32 @@
+"""
+상수 정의 모듈
+"""
+
+APP_NAME = "통합 문제은행 시스템 PRO v4.0"
+APP_VERSION = "4.0.0"
+SCHEMA_VERSION = 2
+
+# 선지 유형
+CIRCLE_NUMS = "①②③④⑤"
+ALPHA_CHOICES = ["A", "B", "C", "D", "E"]
+VALID_ANSWERS_NUM = set(CIRCLE_NUMS)
+VALID_ANSWERS_ALPHA = set(ALPHA_CHOICES)
+
+# 분류 옵션
+SCHOOL_LEVELS = ["중학교", "고등학교"]
+GRADES = ["1학년", "2학년", "3학년", "공통"]
+EXAM_TYPES = ["내신", "모의고사", "부교재"]
+EXAM_YEARS = ["2026년", "2025년", "2024년", "2023년"]
+EXAM_MONTHS = ["3월", "4월", "6월", "9월", "11월"]
+DIFFICULTY_LEVELS = ["1", "2", "3", "4", "5"]
+DIFFICULTY_LABELS = {
+    "1": "최하", "2": "하", "3": "중", "4": "상", "5": "최상"
+}
+
+# 기본 설정
+DEFAULT_CONFIG = {
+    "last_dir": "",
+    "db_dir": "",
+    "font_name": "맑은 고딕",
+    "font_size": "10",
+}
