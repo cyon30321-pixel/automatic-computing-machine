@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.sutam_draft.json
+sutam_maker_config.json
+sutam_question_bank.json
+sutam_history.json
