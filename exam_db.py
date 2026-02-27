@@ -93,6 +93,8 @@ def parsed_to_db_items(parsed_questions, source_title="", tags=None):
             "c_type": detect_c_type(q.get("choices", [])),
             "answer": None,
             "explanation": None,
+            "difficulty": q.get("difficulty", "3"),
+            "error_rate": q.get("error_rate", "0"),
         }
         # 재구성에 필요한 추가 필드 보존
         if q.get("bogi"):
@@ -101,6 +103,8 @@ def parsed_to_db_items(parsed_questions, source_title="", tags=None):
             q_entry["tables"] = q["tables"]
         if q.get("graph_tag"):
             q_entry["graph_tag"] = q["graph_tag"]
+        if q.get("image_path"):
+            q_entry["image_path"] = q["image_path"]
 
         if jesi:
             if jesi == current_passage:
@@ -152,6 +156,7 @@ def db_items_to_exam_data(items):
                 "bogi": q.get("bogi", ""),
                 "jesi": item.get("passage", ""),
                 "graph_tag": q.get("graph_tag"),
+                "image_path": q.get("image_path"),
                 "choices": q.get("choices", []),
             }
             result.append(entry)
@@ -272,11 +277,22 @@ def build_index(db_root):
         iid = item.get("item_id", "")
         if not iid:
             continue
+        questions = item.get("questions", [])
+        has_answer = any(q.get("answer") for q in questions)
+        avg_diff = "3"
+        if questions:
+            diffs = [int(q.get("difficulty", 3)) for q in questions
+                     if str(q.get("difficulty", "3")).isdigit()]
+            if diffs:
+                avg_diff = str(round(sum(diffs) / len(diffs)))
         index["items"][iid] = {
             "source_title": item.get("source_title", ""),
             "tags": item.get("tags", []),
             "updated_at": item.get("updated_at", ""),
-            "question_count": len(item.get("questions", [])),
+            "question_count": len(questions),
+            "has_answer": has_answer,
+            "difficulty": avg_diff,
+            "passage": item.get("passage", ""),
             "search_text": _build_search_text(item),
         }
     index_path = os.path.join(db_root, "index.json")
@@ -301,11 +317,22 @@ def update_index_entry(db_root, item):
     """단일 아이템의 인덱스 엔트리 업데이트."""
     index = load_index(db_root)
     iid = item.get("item_id", "")
+    questions = item.get("questions", [])
+    has_answer = any(q.get("answer") for q in questions)
+    avg_diff = "3"
+    if questions:
+        diffs = [int(q.get("difficulty", 3)) for q in questions
+                 if str(q.get("difficulty", "3")).isdigit()]
+        if diffs:
+            avg_diff = str(round(sum(diffs) / len(diffs)))
     index["items"][iid] = {
         "source_title": item.get("source_title", ""),
         "tags": item.get("tags", []),
         "updated_at": item.get("updated_at", ""),
-        "question_count": len(item.get("questions", [])),
+        "question_count": len(questions),
+        "has_answer": has_answer,
+        "difficulty": avg_diff,
+        "passage": item.get("passage", ""),
         "search_text": _build_search_text(item),
     }
     index_path = os.path.join(db_root, "index.json")
