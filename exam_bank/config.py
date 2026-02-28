@@ -1,14 +1,11 @@
 """
-설정 관리 모듈 — 경로, 폰트, JSON 설정 파일
+설정 관리 모듈 v5.0 — 경로, 폰트, JSON 설정 파일
 """
 
 import os
 import json
 import platform
 import subprocess
-
-import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
 
 from exam_bank.constants import DEFAULT_CONFIG
 
@@ -17,7 +14,13 @@ CONFIG_FILE = os.path.join(SCRIPT_DIR, "exam_pro_config.json")
 
 
 def setup_korean_font():
-    """매트플롯립 한글 폰트 자동 설정."""
+    """매트플롯립 한글 폰트 자동 설정 (matplotlib 있을 때만)."""
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib.font_manager as fm
+    except ImportError:
+        return
+
     try:
         plt.style.use("seaborn-v0_8-whitegrid")
     except Exception:
@@ -59,7 +62,7 @@ def save_config(cfg):
 def get_db_path(cfg):
     folder = cfg.get("db_dir", SCRIPT_DIR)
     os.makedirs(folder, exist_ok=True)
-    return os.path.join(folder, "question_bank_v4.db")
+    return os.path.join(folder, "question_bank_v5.db")
 
 
 def open_directory(path):

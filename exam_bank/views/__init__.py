@@ -1,1 +1,1 @@
-# views package
+"""뷰 계층"""
