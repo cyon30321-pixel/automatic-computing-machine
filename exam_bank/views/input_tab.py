@@ -73,17 +73,6 @@ class InputTab:
         top.title(f"검수 — {len(parsed)}개 지문 발견" + (f" (중복 {dup_count}개)" if dup_count else ""))
         top.geometry("920x720"); top.attributes("-topmost", True)
 
-        txt = tk.Text(top, font=("Consolas", 10), bg="#f8fafc")
-        txt.pack(fill="both", expand=True, padx=16, pady=8)
-        for i, item in enumerate(parsed, 1):
-            dup_warn = " ⚠️ 중복!" if item.get("_duplicate") else ""
-            txt.insert(tk.END, f"{'='*20} [지문 {i}]{dup_warn} {'='*20}\n\n")
-            txt.insert(tk.END, item["passage"] + "\n\n")
-            for q in item["questions"]:
-                num = f"{q['q_num']}. " if q["q_num"] != "-" else ""
-                txt.insert(tk.END, f"{num}{q['content']}\n\n")
-            txt.insert(tk.END, "\n")
-
         def do_save():
             saved = 0
             for item in parsed:
@@ -102,5 +91,17 @@ class InputTab:
             self.txt_input.delete("1.0", tk.END); self.txt_answer.delete("1.0", tk.END)
             self.app.refresh_all()
 
-        tk.Button(top, text="최종 저장", bg="#16a34a", fg="white",
-                  font=("맑은 고딕", 11, "bold"), height=2, command=do_save).pack(fill="x", padx=16, pady=8)
+        # 버튼을 먼저 pack (항상 하단에 보임)
+        tk.Button(top, text="✅ 최종 저장", bg="#16a34a", fg="white",
+                  font=("맑은 고딕", 12, "bold"), height=2, command=do_save).pack(fill="x", padx=16, pady=8, side="bottom")
+
+        txt = tk.Text(top, font=("Consolas", 10), bg="#f8fafc")
+        txt.pack(fill="both", expand=True, padx=16, pady=8)
+        for i, item in enumerate(parsed, 1):
+            dup_warn = " ⚠️ 중복!" if item.get("_duplicate") else ""
+            txt.insert(tk.END, f"{'='*20} [지문 {i}]{dup_warn} {'='*20}\n\n")
+            txt.insert(tk.END, item["passage"] + "\n\n")
+            for q in item["questions"]:
+                num = f"{q['q_num']}. " if q["q_num"] != "-" else ""
+                txt.insert(tk.END, f"{num}{q['content']}\n\n")
+            txt.insert(tk.END, "\n")
