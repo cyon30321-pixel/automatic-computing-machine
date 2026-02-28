@@ -32,12 +32,14 @@ def init_db(cfg):
     with db_conn(cfg) as conn:
         cur = conn.cursor()
 
+        # 스키마 실행
         if os.path.exists(schema_path):
             with open(schema_path, "r", encoding="utf-8") as f:
                 cur.executescript(f.read())
         else:
             _create_tables_inline(cur)
 
+        # 마이그레이션: 기존 테이블에 누락 컬럼 추가
         _migrate(cur)
 
 
