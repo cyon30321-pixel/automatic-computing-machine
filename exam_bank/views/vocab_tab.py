@@ -1,10 +1,10 @@
 """
-단어장 관리 탭 v6.0
+단어장 관리 탭 v7.0
 — 단어장/단원/단어 CRUD
-— AI 추출 가져오기 (JSON 붙여넣기)
+— AI 추출 가져오기 (JSON: 단어+예문)
 — Day 조합 출제 범위 설정
 — 단어 시험지 생성
-— 학생별 학습 이력
+— v7.0: Master-Detail 예문 UI, 예문 CRUD
 """
 
 import os
@@ -13,29 +13,23 @@ import json
 import tkinter as tk
 from tkinter import messagebox, filedialog, ttk
 
-from exam_bank.constants import VOCAB_CATEGORIES
+from exam_bank.constants import (
+    VOCAB_CATEGORIES, SENTENCE_DIFFICULTY, SENTENCE_DIFF_SHORT,
+    SENTENCE_SOURCES, AI_PROMPT_SENTENCES, AI_PROMPT_WORDS_ONLY,
+)
 from exam_bank.models.vocabulary import (
     add_vocab_book, update_vocab_book, delete_vocab_book, list_vocab_books, get_vocab_book,
     add_vocab_unit, update_vocab_unit, delete_vocab_unit, list_vocab_units,
     add_vocab_word, update_vocab_word, delete_vocab_word, list_vocab_words,
     get_words_by_unit_ids, bulk_add_words, bulk_add_words_with_days,
     import_words_from_excel, get_vocab_unit_stats, get_wrong_words,
+    # v7.0: 예문 관련
+    add_sentence, update_sentence, delete_sentence, list_sentences,
+    bulk_add_sentences,
 )
 from exam_bank.models.student import list_students, get_student
 from exam_bank.services.vocab_generator import create_vocab_test
 from exam_bank.config import open_directory
-
-
-# AI 추출 프롬프트 템플릿
-AI_PROMPT_TEMPLATE = """이 FactoryVoca 단어 시험지 사진에서 모든 단어를 추출해주세요.
-번호, 영어 단어, 한국어 뜻, 품사를 빠짐없이 포함해야 합니다.
-빈칸에 쓴 답이 있으면 무시하고 원래 정답만 추출하세요.
-
-JSON 배열로만 출력하세요. 다른 설명은 필요 없습니다.
-[
-  {"no": 1, "english": "abandon", "korean": "버리다", "pos": "v."},
-  ...
-]"""
 
 
 class VocabTab:
@@ -134,6 +128,37 @@ class VocabTab:
         tk.Button(wr, text="단어 추가", command=self._add_word, font=("맑은 고딕", 8)).pack(side="right", padx=2)
         tk.Button(wr, text="수정", command=self._edit_word, font=("맑은 고딕", 8)).pack(side="right", padx=2)
         tk.Button(wr, text="삭제", command=self._delete_word, bg="#dc2626", fg="white", font=("맑은 고딕", 8)).pack(side="right", padx=2)
+
+        # v7.0: 단어 선택 시 예문 패널 연동
+        self.tree_words.bind("<<TreeviewSelect>>", lambda e: self._on_word_selected())
+
+        # ── v7.0 예문(Sentence) Detail 패널 ──
+        sf = tk.LabelFrame(parent, text=" 💬 예문 (선택된 단어) ", font=("맑은 고딕", 9, "bold"))
+        sf.pack(fill="x", padx=4, pady=4)
+
+        self.tree_sentences = ttk.Treeview(sf, columns=("난이도", "영어 예문", "한국어 해석", "target"),
+                                            show="headings", height=4)
+        self.tree_sentences.heading("난이도", text="난이도")
+        self.tree_sentences.heading("영어 예문", text="English Sentence")
+        self.tree_sentences.heading("한국어 해석", text="한국어 해석")
+        self.tree_sentences.heading("target", text="target")
+        self.tree_sentences.column("난이도", width=50, anchor="center")
+        self.tree_sentences.column("영어 예문", width=180)
+        self.tree_sentences.column("한국어 해석", width=130)
+        self.tree_sentences.column("target", width=60, anchor="center")
+        scr_s = ttk.Scrollbar(sf, orient="vertical", command=self.tree_sentences.yview)
+        self.tree_sentences.configure(yscrollcommand=scr_s.set)
+        self.tree_sentences.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=4)
+        scr_s.pack(side="right", fill="y", pady=4, padx=(0, 6))
+
+        sr = tk.Frame(sf); sr.pack(side="bottom", fill="x", padx=6, pady=2)
+        self.lbl_sent_count = tk.Label(sr, text="예문 0개", font=("맑은 고딕", 8), fg="#475569")
+        self.lbl_sent_count.pack(side="left")
+        tk.Button(sr, text="예문 추가", command=self._add_sentence_dialog, bg="#7c3aed", fg="white",
+                  font=("맑은 고딕", 8, "bold")).pack(side="right", padx=2)
+        tk.Button(sr, text="수정", command=self._edit_sentence_dialog, font=("맑은 고딕", 8)).pack(side="right", padx=2)
+        tk.Button(sr, text="삭제", command=self._delete_sentence, bg="#dc2626", fg="white",
+                  font=("맑은 고딕", 8)).pack(side="right", padx=2)
 
     # ═══════════════════════════════════════════
     # 중앙: 출제 범위
@@ -448,45 +473,64 @@ class VocabTab:
             return messagebox.showwarning("알림", "먼저 단어장을 선택하세요.")
 
         top = tk.Toplevel(self.app.root)
-        top.title("AI 추출 가져오기")
-        top.geometry("700x650")
+        top.title("AI 추출 가져오기 (v7.0)")
+        top.geometry("750x720")
         top.attributes("-topmost", True)
 
-        # 프롬프트 복사 영역
+        # ── 1️⃣ 프롬프트 선택 + 복사 ──
         pf = tk.LabelFrame(top, text=" 1️⃣ AI 프롬프트 (사진과 함께 붙여넣기) ", font=("맑은 고딕", 9, "bold"))
         pf.pack(fill="x", padx=12, pady=6)
-        txt_prompt = tk.Text(pf, height=5, font=("Consolas", 9), bg="#f8f9fa")
+
+        # 프롬프트 모드 선택
+        mode_f = tk.Frame(pf); mode_f.pack(fill="x", padx=8, pady=2)
+        prompt_mode = tk.IntVar(value=1)  # 1=예문포함, 0=단어만
+        tk.Radiobutton(mode_f, text="📝 단어 + 예문 (권장)", variable=prompt_mode, value=1,
+                       font=("맑은 고딕", 8, "bold"), command=lambda: _update_prompt()).pack(side="left")
+        tk.Radiobutton(mode_f, text="📋 단어만", variable=prompt_mode, value=0,
+                       font=("맑은 고딕", 8), command=lambda: _update_prompt()).pack(side="left", padx=12)
+
+        txt_prompt = tk.Text(pf, height=5, font=("Consolas", 9), bg="#f8f9fa", wrap="word")
         txt_prompt.pack(fill="x", padx=8, pady=4)
-        txt_prompt.insert("1.0", AI_PROMPT_TEMPLATE)
-        txt_prompt.config(state="disabled")
+
+        def _get_current_prompt():
+            return AI_PROMPT_SENTENCES if prompt_mode.get() == 1 else AI_PROMPT_WORDS_ONLY
+
+        def _update_prompt():
+            txt_prompt.config(state="normal")
+            txt_prompt.delete("1.0", tk.END)
+            txt_prompt.insert("1.0", _get_current_prompt())
+            txt_prompt.config(state="disabled")
+
+        _update_prompt()
 
         def copy_prompt():
             top.clipboard_clear()
-            top.clipboard_append(AI_PROMPT_TEMPLATE)
-            messagebox.showinfo("복사 완료", "프롬프트가 클립보드에 복사되었습니다.\nClaude 채팅에 사진과 함께 붙여넣으세요.")
+            top.clipboard_append(_get_current_prompt())
+            messagebox.showinfo("복사 완료", "프롬프트가 클립보드에 복사되었습니다.\nClaude/ChatGPT 채팅에 사진과 함께 붙여넣으세요.")
 
         tk.Button(pf, text="📋 프롬프트 복사", command=copy_prompt,
                   bg="#2563eb", fg="white", font=("맑은 고딕", 9, "bold")).pack(padx=8, pady=2)
 
-        # JSON 붙여넣기 영역
+        # ── 2️⃣ JSON 붙여넣기 ──
         jf = tk.LabelFrame(top, text=" 2️⃣ AI가 출력한 JSON 붙여넣기 ", font=("맑은 고딕", 9, "bold"))
         jf.pack(fill="x", padx=12, pady=6)
-        txt_json = tk.Text(jf, height=8, font=("Consolas", 9))
+        txt_json = tk.Text(jf, height=7, font=("Consolas", 9))
         txt_json.pack(fill="x", padx=8, pady=4)
 
-        # 단원 지정
         df = tk.Frame(jf); df.pack(fill="x", padx=8, pady=4)
         tk.Label(df, text="Day 이름:").pack(side="left")
         ent_day = tk.Entry(df, width=15); ent_day.pack(side="left", padx=4)
         ent_day.insert(0, "")
         tk.Label(df, text="(비우면 section 필드로 자동 분류)", fg="#94a3b8", font=("맑은 고딕", 8)).pack(side="left")
 
-        # 미리보기
+        # ── 3️⃣ 미리보기 ──
         pvf = tk.LabelFrame(top, text=" 3️⃣ 미리보기 ", font=("맑은 고딕", 9, "bold"))
         pvf.pack(fill="both", expand=True, padx=12, pady=6)
-        tree_pv = ttk.Treeview(pvf, columns=("No", "영어", "한국어", "품사"), show="headings", height=6)
-        for col, w in [("No", 35), ("영어", 180), ("한국어", 180), ("품사", 60)]:
-            tree_pv.heading(col, text=col); tree_pv.column(col, width=w)
+
+        # v7.0: 예문 컬럼 추가
+        tree_pv = ttk.Treeview(pvf, columns=("No", "영어", "한국어", "품사", "예문수"), show="headings", height=6)
+        for col, w in [("No", 30), ("영어", 150), ("한국어", 150), ("품사", 50), ("예문수", 50)]:
+            tree_pv.heading(col, text=col); tree_pv.column(col, width=w, anchor="center" if col in ("No", "품사", "예문수") else "w")
         tree_pv.pack(fill="both", expand=True, padx=8, pady=4)
 
         lbl_pv_count = tk.Label(pvf, text="", font=("맑은 고딕", 8), fg="#475569")
@@ -500,7 +544,6 @@ class VocabTab:
             if not raw:
                 return messagebox.showwarning("오류", "JSON을 붙여넣으세요.")
 
-            # JSON 파싱 (코드펜스 제거)
             raw = re.sub(r'^```(?:json)?\s*', '', raw).strip()
             raw = re.sub(r'```\s*$', '', raw).strip()
 
@@ -514,34 +557,38 @@ class VocabTab:
 
             parsed_words = data
             tree_pv.delete(*tree_pv.get_children())
+            total_sents = 0
             for i, w in enumerate(data, 1):
                 eng = w.get("english", w.get("word", ""))
                 kor = w.get("korean", w.get("meaning", w.get("korean_meaning", "")))
                 pos = w.get("pos", w.get("part_of_speech", ""))
-                tree_pv.insert("", "end", values=(i, eng, kor, pos))
+                sents = w.get("sentences", [])
+                sc = len(sents)
+                total_sents += sc
+                tree_pv.insert("", "end", values=(i, eng, kor, pos, sc if sc else "-"))
 
-            # section 자동 분류 미리보기
+            # 요약 정보
             sections = {}
             for w in data:
                 sec = w.get("section", "")
                 if sec:
                     sections[sec] = sections.get(sec, 0) + 1
+
+            info_parts = [f"총 {len(data)}개 단어"]
+            if total_sents:
+                info_parts.append(f"예문 {total_sents}개")
             if sections:
                 sec_info = ", ".join(f"{k}({v})" for k, v in sections.items())
-                lbl_pv_count.config(text=f"총 {len(data)}개 | 자동분류: {sec_info}")
-            else:
-                lbl_pv_count.config(text=f"총 {len(data)}개 단어 파싱됨")
+                info_parts.append(f"자동분류: {sec_info}")
+            lbl_pv_count.config(text=" | ".join(info_parts))
 
         def do_import():
             if not parsed_words:
                 return messagebox.showwarning("오류", "먼저 '미리보기'를 클릭하세요.")
             day_name = ent_day.get().strip()
             if day_name:
-                # 단일 Day로 등록
                 results = bulk_add_words_with_days(self.cfg, bid, {day_name: parsed_words})
-                total = sum(results.values())
             else:
-                # section 필드로 자동 분류
                 has_section = any(w.get("section") for w in parsed_words)
                 if has_section:
                     grouped = {}
@@ -551,13 +598,15 @@ class VocabTab:
                             grouped[sec] = []
                         grouped[sec].append(w)
                     results = bulk_add_words_with_days(self.cfg, bid, grouped)
-                    total = sum(results.values())
                 else:
                     results = bulk_add_words_with_days(self.cfg, bid, {"Day 01": parsed_words})
-                    total = sum(results.values())
 
+            # v7.0: 예문 개수도 결과에 포함
+            sent_total = results.pop("__sentences_total__", 0)
+            total = sum(results.values())
             detail = "\n".join(f"  {k}: {v}개" for k, v in results.items())
-            messagebox.showinfo("가져오기 완료", f"총 {total}개 단어 등록!\n\n{detail}")
+            sent_msg = f"\n📝 예문 {sent_total}개 자동저장" if sent_total else ""
+            messagebox.showinfo("가져오기 완료", f"총 {total}개 단어 등록!{sent_msg}\n\n{detail}")
             top.destroy()
             self.refresh()
 
@@ -751,6 +800,10 @@ class VocabTab:
 
     def _refresh_words(self):
         self.tree_words.delete(*self.tree_words.get_children())
+        # v7.0: 예문 패널도 초기화
+        self.tree_sentences.delete(*self.tree_sentences.get_children())
+        self.lbl_sent_count.config(text="예문 0개")
+
         uid = self._get_current_unit_id()
         if not uid:
             self.lbl_word_count.config(text="0개")
@@ -775,6 +828,178 @@ class VocabTab:
                 f"{s['best_score']}%" if s["best_score"] else "-",
                 s["last_date"] or "-"
             ))
+
+    # ═══════════════════════════════════════════
+    # v7.0: 예문 (Sentence) CRUD
+    # ═══════════════════════════════════════════
+
+    def _get_selected_word_id(self):
+        """단어 Treeview에서 선택된 word_id 반환"""
+        sel = self.tree_words.selection()
+        return int(sel[0]) if sel else None
+
+    def _get_selected_sentence_id(self):
+        """예문 Treeview에서 선택된 sentence_id 반환"""
+        sel = self.tree_sentences.selection()
+        return int(sel[0]) if sel else None
+
+    def _on_word_selected(self):
+        """단어 클릭 → 예문 패널 새로고침 (Master-Detail)"""
+        self._refresh_sentences()
+
+    def _refresh_sentences(self):
+        """선택된 단어의 예문 목록 새로고침"""
+        self.tree_sentences.delete(*self.tree_sentences.get_children())
+        wid = self._get_selected_word_id()
+        if not wid:
+            self.lbl_sent_count.config(text="예문 0개")
+            return
+        sents = list_sentences(self.cfg, wid)
+        for s in sents:
+            diff_label = SENTENCE_DIFF_SHORT.get(s.get("difficulty", 1), "?")
+            en = s.get("sentence_en", "")
+            ko = s.get("sentence_ko", "")
+            tgt = s.get("target_form", "")
+            self.tree_sentences.insert("", "end", iid=str(s["id"]),
+                                        values=(diff_label, en, ko, tgt))
+        self.lbl_sent_count.config(text=f"예문 {len(sents)}개")
+
+    def _add_sentence_dialog(self):
+        """예문 수동 추가 대화상자"""
+        wid = self._get_selected_word_id()
+        if not wid:
+            return messagebox.showwarning("알림", "먼저 단어를 선택하세요.")
+
+        # 선택된 단어의 english 가져오기
+        sel = self.tree_words.selection()
+        word_vals = self.tree_words.item(sel[0], "values") if sel else None
+        word_eng = word_vals[1] if word_vals else ""
+
+        top = tk.Toplevel(self.app.root)
+        top.title(f"예문 추가 — {word_eng}")
+        top.geometry("550x340")
+        top.attributes("-topmost", True)
+
+        # 영어 예문
+        f1 = tk.Frame(top); f1.pack(fill="x", padx=16, pady=(12, 4))
+        tk.Label(f1, text="영어 예문:", width=10, anchor="w").pack(side="left")
+        ent_en = tk.Entry(f1, width=45, font=("맑은 고딕", 9)); ent_en.pack(side="left", padx=4)
+        ent_en.focus_set()
+
+        # 한국어 해석
+        f2 = tk.Frame(top); f2.pack(fill="x", padx=16, pady=4)
+        tk.Label(f2, text="한국어 해석:", width=10, anchor="w").pack(side="left")
+        ent_ko = tk.Entry(f2, width=45, font=("맑은 고딕", 9)); ent_ko.pack(side="left", padx=4)
+
+        # target form
+        f3 = tk.Frame(top); f3.pack(fill="x", padx=16, pady=4)
+        tk.Label(f3, text="target form:", width=10, anchor="w").pack(side="left")
+        ent_tgt = tk.Entry(f3, width=20, font=("맑은 고딕", 9)); ent_tgt.pack(side="left", padx=4)
+        ent_tgt.insert(0, word_eng)
+        tk.Label(f3, text="(문장 내 실제 활용형)", fg="#94a3b8", font=("맑은 고딕", 8)).pack(side="left")
+
+        # 난이도
+        f4 = tk.Frame(top); f4.pack(fill="x", padx=16, pady=4)
+        tk.Label(f4, text="난이도:", width=10, anchor="w").pack(side="left")
+        diff_vals = [f"{k} - {v}" for k, v in SENTENCE_DIFFICULTY.items()]
+        combo_diff = ttk.Combobox(f4, values=diff_vals, width=18, state="readonly")
+        combo_diff.current(0); combo_diff.pack(side="left", padx=4)
+
+        # 출처
+        f5 = tk.Frame(top); f5.pack(fill="x", padx=16, pady=4)
+        tk.Label(f5, text="출처:", width=10, anchor="w").pack(side="left")
+        combo_src = ttk.Combobox(f5, values=SENTENCE_SOURCES, width=18)
+        combo_src.set("직접입력"); combo_src.pack(side="left", padx=4)
+
+        def do_add():
+            en = ent_en.get().strip()
+            if not en:
+                return messagebox.showwarning("오류", "영어 예문을 입력하세요.")
+            diff = int(combo_diff.get().split(" - ")[0]) if combo_diff.get() else 1
+            add_sentence(
+                self.cfg, wid,
+                sentence_en=en,
+                sentence_ko=ent_ko.get().strip(),
+                target_form=ent_tgt.get().strip(),
+                difficulty=diff,
+                source=combo_src.get().strip(),
+            )
+            top.destroy()
+            self._refresh_sentences()
+
+        tk.Button(top, text="추가", bg="#7c3aed", fg="white",
+                  font=("맑은 고딕", 10, "bold"), command=do_add).pack(fill="x", padx=16, pady=12)
+        ent_en.bind("<Return>", lambda e: ent_ko.focus_set())
+        ent_ko.bind("<Return>", lambda e: do_add())
+
+    def _edit_sentence_dialog(self):
+        """예문 수정 대화상자"""
+        sid = self._get_selected_sentence_id()
+        if not sid:
+            return messagebox.showwarning("알림", "예문을 선택하세요.")
+
+        vals = self.tree_sentences.item(str(sid), "values")
+        # vals = (난이도, 영어 예문, 한국어 해석, target)
+        curr_diff_label = vals[0]
+        curr_en = vals[1]
+        curr_ko = vals[2]
+        curr_tgt = vals[3]
+
+        top = tk.Toplevel(self.app.root)
+        top.title("예문 수정")
+        top.geometry("550x320")
+        top.attributes("-topmost", True)
+
+        f1 = tk.Frame(top); f1.pack(fill="x", padx=16, pady=(12, 4))
+        tk.Label(f1, text="영어 예문:", width=10, anchor="w").pack(side="left")
+        ent_en = tk.Entry(f1, width=45, font=("맑은 고딕", 9)); ent_en.pack(side="left", padx=4)
+        ent_en.insert(0, curr_en); ent_en.focus_set()
+
+        f2 = tk.Frame(top); f2.pack(fill="x", padx=16, pady=4)
+        tk.Label(f2, text="한국어 해석:", width=10, anchor="w").pack(side="left")
+        ent_ko = tk.Entry(f2, width=45, font=("맑은 고딕", 9)); ent_ko.pack(side="left", padx=4)
+        ent_ko.insert(0, curr_ko)
+
+        f3 = tk.Frame(top); f3.pack(fill="x", padx=16, pady=4)
+        tk.Label(f3, text="target form:", width=10, anchor="w").pack(side="left")
+        ent_tgt = tk.Entry(f3, width=20, font=("맑은 고딕", 9)); ent_tgt.pack(side="left", padx=4)
+        ent_tgt.insert(0, curr_tgt)
+
+        f4 = tk.Frame(top); f4.pack(fill="x", padx=16, pady=4)
+        tk.Label(f4, text="난이도:", width=10, anchor="w").pack(side="left")
+        diff_vals = [f"{k} - {v}" for k, v in SENTENCE_DIFFICULTY.items()]
+        combo_diff = ttk.Combobox(f4, values=diff_vals, width=18, state="readonly")
+        # 현재 난이도 매칭
+        diff_idx = 0
+        for i, (k, v) in enumerate(SENTENCE_DIFF_SHORT.items()):
+            if v == curr_diff_label:
+                diff_idx = i; break
+        combo_diff.current(diff_idx); combo_diff.pack(side="left", padx=4)
+
+        def do_save():
+            diff = int(combo_diff.get().split(" - ")[0]) if combo_diff.get() else 1
+            update_sentence(
+                self.cfg, sid,
+                sentence_en=ent_en.get().strip(),
+                sentence_ko=ent_ko.get().strip(),
+                target_form=ent_tgt.get().strip(),
+                difficulty=diff,
+            )
+            top.destroy()
+            self._refresh_sentences()
+
+        tk.Button(top, text="저장", bg="#16a34a", fg="white",
+                  font=("맑은 고딕", 10, "bold"), command=do_save).pack(fill="x", padx=16, pady=12)
+
+    def _delete_sentence(self):
+        """선택된 예문 삭제"""
+        sid = self._get_selected_sentence_id()
+        if not sid:
+            return messagebox.showwarning("알림", "예문을 선택하세요.")
+        if not messagebox.askyesno("확인", "이 예문을 삭제하시겠습니까?"):
+            return
+        delete_sentence(self.cfg, sid)
+        self._refresh_sentences()
 
     # ═══════════════════════════════════════════
     # 유틸리티
