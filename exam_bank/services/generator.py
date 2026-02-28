@@ -1,7 +1,9 @@
 """
-문서 생성 엔진 v5.0
+문서 생성 엔진 v5.4
 — 시험지 (2단 칼럼 + 디자인 박스) / 워크북 / 구문해석지 / 정답지
 — Exam Maker PRO v2.1 의 디자인 테마 통합
+— v5.2: 서술형 조건/우리말/보기 색상 통일 (흑백), 정답지 빠른 정답 추가
+— v5.4: 테이블→문단 테두리 방식 변경 (2단 칼럼 밀림 방지), 오버플로우 방어
 """
 import os
 import re
@@ -32,7 +34,7 @@ from exam_bank.services.parser import parse_exam_text
 
 MAX_SAFE_PATH = 240
 
-# ─── 유틸리티 ───
+# --- utilities ---
 
 def _safe_basename(folder, stem, ext):
     full = os.path.join(folder, stem + ext)
@@ -62,27 +64,26 @@ def convert_to_pdf_safe(docx_path, pdf_path):
             doc.SaveAs(os.path.abspath(pdf_path), FileFormat=17)
             doc.Close()
             word.Quit()
-            return True, "성공"
+            return True, "success"
         except Exception as e:
             if PDF_AVAILABLE:
                 try:
                     _convert_pdf(docx_path, pdf_path)
-                    return True, "성공"
+                    return True, "success"
                 except Exception:
                     pass
-            return False, f"PDF 변환 오류: {e}"
+            return False, f"PDF conversion error: {e}"
     else:
         if not PDF_AVAILABLE:
-            return False, "docx2pdf 미설치"
+            return False, "docx2pdf not installed"
         try:
             _convert_pdf(docx_path, pdf_path)
-            return True, "성공"
+            return True, "success"
         except Exception as e:
             return False, str(e)
 
 
 def convert_docx_pairs_to_pdf_checked(pairs):
-    """여러 docx를 일괄 PDF 변환"""
     results = []
     for docx_path, pdf_path in pairs:
         if not os.path.exists(docx_path):
@@ -92,7 +93,7 @@ def convert_docx_pairs_to_pdf_checked(pairs):
     return results
 
 
-# ─── 문서 스타일 헬퍼 ───
+# --- doc style helpers ---
 
 def _apply_doc_style(doc, font_name, font_size):
     style = doc.styles["Normal"]
@@ -238,28 +239,70 @@ def create_styled_passage_table(doc, passage_text):
     return table
 
 
-def create_styled_box(doc, label, content, bg_color, border_color, label_color_hex):
+def create_monochrome_box(doc, label, content):
+    """
+    v5.4: paragraph-border based box (prevents table column overflow in 2-col layout)
+    """
+    if not content.strip():
+        return
+
     label_p = doc.add_paragraph()
     label_p.paragraph_format.space_before = Pt(4)
-    label_p.paragraph_format.space_after = Pt(2)
+    label_p.paragraph_format.space_after = Pt(0)
     label_run = label_p.add_run(f"  {label}")
     label_run.bold = True
     label_run.font.size = Pt(9)
-    label_run.font.color.rgb = RGBColor.from_string(label_color_hex)
-    if not content.strip():
-        return
-    table = doc.add_table(rows=1, cols=1)
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    cell = table.cell(0, 0)
-    set_cell_background(cell, bg_color)
-    set_cell_borders(cell, color=border_color, size="4")
-    _set_cell_margins(cell, '80', '80', '120', '120')
-    cell.text = ""
-    add_formatted_text(cell.paragraphs[0], content, font_size=9)
-    return table
+    label_run.font.color.rgb = RGBColor(0, 0, 0)
+
+    lines = [l.strip() for l in content.split('\n') if l.strip()]
+
+    for i, line in enumerate(lines):
+        bp = doc.add_paragraph()
+        bp.paragraph_format.left_indent = Cm(0.5)
+        bp.paragraph_format.right_indent = Cm(0.3)
+        bp.paragraph_format.space_before = Pt(2) if i == 0 else Pt(1)
+        bp.paragraph_format.space_after = Pt(2) if i == len(lines) - 1 else Pt(1)
+        add_formatted_text(bp, line, font_size=9)
+
+        pPr = bp._element.get_or_add_pPr()
+        pBdr = OxmlElement('w:pBdr')
+
+        shd = OxmlElement('w:shd')
+        shd.set(qn('w:val'), 'clear')
+        shd.set(qn('w:fill'), 'F0F0F0')
+        pPr.append(shd)
+
+        borders_spec = {}
+        if i == 0:
+            borders_spec = {'top': True, 'left': True, 'right': True, 'bottom': False}
+        elif i == len(lines) - 1:
+            borders_spec = {'top': False, 'left': True, 'right': True, 'bottom': True}
+        else:
+            borders_spec = {'top': False, 'left': True, 'right': True, 'bottom': False}
+
+        if len(lines) == 1:
+            borders_spec = {'top': True, 'left': True, 'right': True, 'bottom': True}
+
+        for side, show in borders_spec.items():
+            bdr = OxmlElement(f'w:{side}')
+            if show:
+                bdr.set(qn('w:val'), 'single')
+                bdr.set(qn('w:sz'), '4')
+                bdr.set(qn('w:space'), '4')
+                bdr.set(qn('w:color'), '888888')
+            else:
+                bdr.set(qn('w:val'), 'none')
+                bdr.set(qn('w:sz'), '0')
+                bdr.set(qn('w:space'), '0')
+            pBdr.append(bdr)
+        pPr.append(pBdr)
+
+    spacer = doc.add_paragraph()
+    spacer.paragraph_format.space_before = Pt(2)
+    spacer.paragraph_format.space_after = Pt(4)
 
 
-# ─── 시험지 생성 (Exam Maker PRO v2.1 디자인) ───
+# --- exam docx generation (v5.4) ---
 
 def create_full_exam_docx(target_dir, filename, raw_text, font_name, font_size,
                           logo_path="", display_title="실전 모의고사"):
@@ -289,12 +332,19 @@ def create_full_exam_docx(target_dir, filename, raw_text, font_name, font_size,
             create_styled_passage_table(doc, item["passage"])
             doc.add_paragraph().paragraph_format.space_after = Pt(4)
 
-        for q in item["questions"]:
+        for q_idx, q in enumerate(item["questions"]):
             q_text = q["text"]
             special_pattern = r'(<조건>|\[조건\]|\[우리말\]|\[보기\]|\[정답\]\s*:?|정답\s*:)'
             special_matches = list(re.finditer(special_pattern, q_text))
             main_q = q_text
             special_blocks = []
+
+            # v5.4: arithmetic next-question-number inference
+            current_q_num = q["num"]
+            try:
+                expected_next_q_num = int(current_q_num) + 1
+            except (ValueError, TypeError):
+                expected_next_q_num = None
 
             if special_matches:
                 main_q = q_text[:special_matches[0].start()].strip()
@@ -303,6 +353,14 @@ def create_full_exam_docx(target_dir, filename, raw_text, font_name, font_size,
                     start = sm.end()
                     end = special_matches[idx_m + 1].start() if idx_m + 1 < len(special_matches) else len(q_text)
                     content = q_text[start:end].strip()
+
+                    # v5.4: overflow detection
+                    if expected_next_q_num is not None:
+                        overflow_pat = rf'(?:\n|^|\s{{2,}})(?P<next_q>{expected_next_q_num}\s*[\.\\)])\\s+(?=[가-힣A-Za-z])'
+                        overflow_match = re.search(overflow_pat, content)
+                        if overflow_match:
+                            content = content[:overflow_match.start()].strip()
+
                     special_blocks.append((label, content))
             else:
                 ans_match = re.search(r'(\[정답\]\s*:|정답\s*:)', q_text)
@@ -321,14 +379,11 @@ def create_full_exam_docx(target_dir, filename, raw_text, font_name, font_size,
             for label, content in special_blocks:
                 if '<조건>' in label or '[조건]' in label:
                     clean_c = re.sub(r'^(<조건>|\[조건\])\s*\n?', '', content).strip()
-                    create_styled_box(doc, "<조건>", clean_c,
-                                      Theme.CONDITION_BG, "E6C84C", "CC8800")
+                    create_monochrome_box(doc, "<조건>", clean_c)
                 elif '[우리말]' in label:
-                    create_styled_box(doc, "[우리말]", content,
-                                      "F5F0FF", "B39DDB", "5E35B1")
+                    create_monochrome_box(doc, "우리말:", content)
                 elif '[보기]' in label:
-                    create_styled_box(doc, "[보기]", content,
-                                      "EFF8FF", "7FAFD4", "2E6DA4")
+                    create_monochrome_box(doc, "보기:", content)
                 elif '[정답]' in label or '정답' in label:
                     ans_p = doc.add_paragraph()
                     ans_p.paragraph_format.space_before = Pt(4)
@@ -359,85 +414,245 @@ def create_full_exam_docx(target_dir, filename, raw_text, font_name, font_size,
     return docx_path, pdf_path
 
 
-# ─── 정답지 생성 ───
+# --- answer sheet (v5.4) ---
 
 def create_answer_sheet_docx(target_dir, filename, raw_ans_text, font_name, font_size,
                              logo_path="", display_title="실전 모의고사"):
     doc = docx.Document()
     _apply_doc_style(doc, font_name, font_size)
-    add_header_banner(doc, "정답 및 해설", display_title, logo_path, font_name)
+    add_header_banner(doc, "맞춤형 시험지 — 정답 및 해설", display_title, logo_path, font_name)
 
     new_section = doc.add_section(WD_SECTION.CONTINUOUS)
     _set_two_columns(new_section)
 
-    ans_m = re.findall(
-        r'\b(\d+)(?:번|[\)\.])?(?:\s*정답\s*:)?\s*[\(\[]?([①②③④⑤A-Ea-e])[\)\]]?',
-        raw_ans_text
-    )
+    ans_items = []
+    lines = raw_ans_text.strip().split("\n")
+    current_item_num = None
+    current_answer = None
+    current_explanation_lines = []
 
-    if ans_m:
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        num_ans_m = re.match(
+            r'^(\d+)[\.\\)번]\s*정답\s*[:：]\s*(.+)',
+            stripped
+        )
+        if not num_ans_m:
+            num_m = re.match(r'^(\d+)[\.\\)번]', stripped)
+            if num_m:
+                if current_item_num is not None:
+                    ans_items.append({
+                        "num": current_item_num,
+                        "answer": current_answer or "",
+                        "explanation": "\n".join(current_explanation_lines).strip()
+                    })
+                current_item_num = num_m.group(1)
+                current_answer = None
+                current_explanation_lines = []
+                rest = stripped[num_m.end():].strip()
+                ans_in_line = re.match(r'^정답\s*[:：]\s*(.+)', rest)
+                if ans_in_line:
+                    current_answer = ans_in_line.group(1).strip()
+                    rest_after = rest[ans_in_line.end():].strip() if ans_in_line.end() < len(rest) else ""
+                    if rest_after:
+                        current_explanation_lines.append(rest_after)
+                elif rest:
+                    current_explanation_lines.append(rest)
+                continue
+
+        if num_ans_m:
+            if current_item_num is not None:
+                ans_items.append({
+                    "num": current_item_num,
+                    "answer": current_answer or "",
+                    "explanation": "\n".join(current_explanation_lines).strip()
+                })
+            current_item_num = num_ans_m.group(1)
+            current_answer = num_ans_m.group(2).strip()
+            current_explanation_lines = []
+            continue
+
+        expl_m = re.match(r'^해설\s*[:：]\s*(.*)', stripped)
+        if expl_m:
+            current_explanation_lines.append(expl_m.group(1).strip())
+            continue
+
+        if current_item_num is not None:
+            ans_mid = re.match(r'^정답\s*[:：]\s*(.+)', stripped)
+            if ans_mid and current_answer is None:
+                current_answer = ans_mid.group(1).strip()
+            else:
+                current_explanation_lines.append(stripped)
+
+    if current_item_num is not None:
+        ans_items.append({
+            "num": current_item_num,
+            "answer": current_answer or "",
+            "explanation": "\n".join(current_explanation_lines).strip()
+        })
+
+    if not ans_items:
+        ans_m = re.findall(
+            r'\b(\d+)(?:번|[\)\.])?\s*(?:\s*정답\s*:)?\s*[\(\[]?([①②③④⑤A-Ea-e][^\s,]*)',
+            raw_ans_text
+        )
+        for q_n, ans in ans_m:
+            ans_items.append({"num": q_n, "answer": ans.strip(), "explanation": ""})
+        for line in lines:
+            stripped = line.strip()
+            expl_line_m = re.match(r'^(\d+)[\.\\)번]\s*(.*)', stripped)
+            if expl_line_m:
+                num = expl_line_m.group(1)
+                rest = expl_line_m.group(2).strip()
+                for item in ans_items:
+                    if item["num"] == num and not item["explanation"]:
+                        item["explanation"] = rest
+
+    if ans_items:
+        match_p = doc.add_paragraph()
+        match_p.paragraph_format.space_before = Pt(6)
+        match_p.paragraph_format.space_after = Pt(4)
+        match_run = match_p.add_run("[※ 문항 번호 매칭표]")
+        match_run.bold = True
+        match_run.font.size = Pt(9)
+        match_run.font.color.rgb = RGBColor.from_string(Theme.PRIMARY)
+
+        for item in ans_items:
+            map_line = f"  ▶ 시험지 {item['num']}번 = 본문 해설 {item['num']}번 참조"
+            mp = doc.add_paragraph()
+            mp.paragraph_format.space_before = Pt(0)
+            mp.paragraph_format.space_after = Pt(0)
+            mr = mp.add_run(map_line)
+            mr.font.size = Pt(8)
+            mr.font.color.rgb = RGBColor(120, 120, 120)
+
+        doc.add_paragraph()
+
+    if ans_items:
         label_p = doc.add_paragraph()
-        label_run = label_p.add_run("  ✅ 빠른 정답 채점표")
+        label_run = label_p.add_run("✅ 빠른 정답 채점표")
         label_run.bold = True
-        label_run.font.size = Pt(11)
+        label_run.font.size = Pt(10)
         label_run.font.color.rgb = RGBColor.from_string(Theme.PRIMARY)
-        label_p.paragraph_format.space_after = Pt(6)
+        label_p.paragraph_format.space_after = Pt(4)
 
-        table = doc.add_table(rows=1, cols=10)
-        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        num_items = len(ans_items)
+        cols_per_row = min(num_items, 5)
+        table = doc.add_table(rows=1, cols=cols_per_row * 2)
+        table.alignment = WD_TABLE_ALIGNMENT.LEFT
+
+        for row in table.rows:
+            for i, cell in enumerate(row.cells):
+                cell.width = Cm(1.0)
+
         hdr = table.rows[0].cells
-        for i in range(5):
+        for i in range(cols_per_row):
             hdr[i*2].text = '문항'
             hdr[i*2+1].text = '정답'
             for c in (hdr[i*2], hdr[i*2+1]):
+                c.width = Cm(1.0)
                 set_cell_background(c, Theme.HEADER_BG)
                 set_cell_borders(c, color=Theme.TABLE_BORDER)
                 set_cell_vertical_alignment(c)
                 for p in c.paragraphs:
                     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    p.paragraph_format.space_before = Pt(1)
+                    p.paragraph_format.space_after = Pt(1)
                     for r in p.runs:
                         r.bold = True
-                        r.font.size = Pt(8)
+                        r.font.size = Pt(7)
                         r.font.color.rgb = RGBColor.from_string(Theme.PRIMARY)
 
         row_cells = None
-        for i, (q_n, ans) in enumerate(ans_m):
-            if i % 5 == 0:
+        for i, item in enumerate(ans_items):
+            col_in_row = i % cols_per_row
+            if col_in_row == 0:
                 row_cells = table.add_row().cells
-            row_cells[(i%5)*2].text = q_n
-            row_cells[(i%5)*2+1].text = ans.upper()
-            set_cell_background(row_cells[(i%5)*2], Theme.LIGHT_BG)
-            set_cell_borders(row_cells[(i%5)*2], color=Theme.TABLE_BORDER)
-            set_cell_borders(row_cells[(i%5)*2+1], color=Theme.TABLE_BORDER)
-            for p in (row_cells[(i%5)*2].paragraphs[0], row_cells[(i%5)*2+1].paragraphs[0]):
+                for c in row_cells:
+                    c.width = Cm(1.0)
+            col = col_in_row * 2
+            row_cells[col].text = item["num"]
+            display_ans = item["answer"]
+            if len(display_ans) > 8 or ' ' in display_ans:
+                display_ans = "서술"
+            row_cells[col+1].text = display_ans
+            set_cell_background(row_cells[col], Theme.LIGHT_BG)
+            set_cell_borders(row_cells[col], color=Theme.TABLE_BORDER)
+            set_cell_borders(row_cells[col+1], color=Theme.TABLE_BORDER)
+            for p in (row_cells[col].paragraphs[0], row_cells[col+1].paragraphs[0]):
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                p.paragraph_format.space_before = Pt(1)
+                p.paragraph_format.space_after = Pt(1)
+                for r in p.runs:
+                    r.font.size = Pt(8)
 
         doc.add_paragraph()
         sep_p = doc.add_paragraph()
         set_paragraph_border_bottom(sep_p, color=Theme.TABLE_BORDER, size="4")
         doc.add_paragraph()
 
-    for line in raw_ans_text.split("\n"):
-        stripped = line.strip()
-        if not stripped:
-            continue
-        num_m = re.match(r'^(\d+)[\.\)번]', stripped)
-        p = doc.add_paragraph()
-        if num_m:
-            p.paragraph_format.space_before = Pt(6)
-            num_run = p.add_run(stripped[:num_m.end()] + " ")
-            num_run.bold = True
-            num_run.font.color.rgb = RGBColor.from_string(Theme.SECONDARY)
-            p.add_run(stripped[num_m.end():].strip())
-        else:
-            p.add_run(stripped)
+    detail_title = doc.add_paragraph()
+    detail_title.paragraph_format.space_before = Pt(8)
+    detail_title.paragraph_format.space_after = Pt(6)
+    dt_run = detail_title.add_run("[정답 및 해설]")
+    dt_run.bold = True
+    dt_run.font.size = Pt(12)
+    dt_run.font.color.rgb = RGBColor.from_string(Theme.PRIMARY)
+
+    if ans_items:
+        for item in ans_items:
+            q_p = doc.add_paragraph()
+            q_p.paragraph_format.space_before = Pt(8)
+            q_p.paragraph_format.space_after = Pt(2)
+            num_r = q_p.add_run(f"{item['num']}. 정답: ")
+            num_r.bold = True
+            num_r.font.size = Pt(int(font_size) + 1)
+            num_r.font.color.rgb = RGBColor.from_string(Theme.SECONDARY)
+            ans_r = q_p.add_run(item["answer"])
+            ans_r.bold = True
+            ans_r.font.size = Pt(int(font_size) + 1)
+
+            if item["explanation"]:
+                expl_p = doc.add_paragraph()
+                expl_p.paragraph_format.space_before = Pt(1)
+                expl_p.paragraph_format.space_after = Pt(4)
+                expl_p.paragraph_format.left_indent = Cm(0.5)
+                expl_label = expl_p.add_run("해설: ")
+                expl_label.bold = True
+                expl_label.font.size = Pt(int(font_size))
+                expl_label.font.color.rgb = RGBColor(80, 80, 80)
+                expl_text = expl_p.add_run(item["explanation"])
+                expl_text.font.size = Pt(int(font_size))
+                expl_text.font.color.rgb = RGBColor(60, 60, 60)
+
+            sep = doc.add_paragraph()
+            sep.paragraph_format.space_before = Pt(2)
+            sep.paragraph_format.space_after = Pt(2)
+    else:
+        for line in raw_ans_text.split("\n"):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            num_m = re.match(r'^(\d+)[\.\\)번]', stripped)
+            p = doc.add_paragraph()
+            if num_m:
+                p.paragraph_format.space_before = Pt(6)
+                num_run = p.add_run(stripped[:num_m.end()] + " ")
+                num_run.bold = True
+                num_run.font.color.rgb = RGBColor.from_string(Theme.SECONDARY)
+                p.add_run(stripped[num_m.end():].strip())
+            else:
+                p.add_run(stripped)
 
     docx_path, pdf_path = build_paths(target_dir, filename, prefix="답안지_")
     doc.save(docx_path)
     return docx_path, pdf_path
 
 
-# ─── 워크북 생성 ───
+# --- workbook ---
 
 def create_workbook_docx(target_dir, filename, raw_text, font_name, font_size,
                          logo_path="", display_title="실전 모의고사"):
@@ -452,7 +667,7 @@ def create_workbook_docx(target_dir, filename, raw_text, font_name, font_size,
     for item in exam_data:
         if item["passage"]:
             sub_blocks = re.split(
-                r'(?=(?:\n|^)\s*(?:\d+[\.\)]\s*)?(?:\[?지문\s*\d+\]?|\[Questions?\s*\d+))',
+                r'(?=(?:\n|^)\s*(?:\d+[\.\\)]\s*)?(?:\[?지문\s*\d+\]?|\[Questions?\s*\d+))',
                 item["passage"], flags=re.IGNORECASE
             )
             for sb in sub_blocks:
@@ -475,7 +690,7 @@ def create_workbook_docx(target_dir, filename, raw_text, font_name, font_size,
         doc.add_paragraph()
 
         clean_passage = re.sub(
-            r'^(?:\d+[\.\)]\s*)?(?:\[?지문\s*\d+\]?|\[Questions?\s*\d+.*?\]|다음\s*글을\s*읽고.*?)\s*',
+            r'^(?:\d+[\.\\)]\s*)?(?:\[?지문\s*\d+\]?|\[Questions?\s*\d+.*?\]|다음\s*글을\s*읽고.*?)\s*',
             '', p_text, flags=re.IGNORECASE
         )
         clean_passage = clean_passage.replace('\n', ' ')
@@ -502,7 +717,7 @@ def create_workbook_docx(target_dir, filename, raw_text, font_name, font_size,
     return docx_path, pdf_path
 
 
-# ─── 구문 해석지 생성 ───
+# --- syntax workbook ---
 
 def create_syntax_workbook_docx(target_dir, filename, raw_text, font_name, font_size,
                                 logo_path="", display_title="실전 모의고사"):
@@ -520,13 +735,13 @@ def create_syntax_workbook_docx(target_dir, filename, raw_text, font_name, font_
 
     raw_text = re.sub(r'\(?해석\)?\s*:', '', raw_text)
     raw_text = raw_text.replace('**', '')
-    blocks = re.split(r'\n(?=\s*\d+[\.\)]\s+)', '\n' + raw_text)
+    blocks = re.split(r'\n(?=\s*\d+[\.\\)]\s+)', '\n' + raw_text)
 
     q_num_auto = 1
     for block in blocks:
         if not block.strip():
             continue
-        m = re.match(r'^\s*(\d+)[\.\)]\s+(.*)', block, re.DOTALL)
+        m = re.match(r'^\s*(\d+)[\.\\)]\s+(.*)', block, re.DOTALL)
         content = m.group(2) if m else block.strip()
         content = re.sub(r'\s*\n\s*', ' ', content).strip()
         if not content:
@@ -557,12 +772,11 @@ def create_syntax_workbook_docx(target_dir, filename, raw_text, font_name, font_
     return docx_path, pdf_path
 
 
-# ─── 기존 호환 함수 (bank_tab에서 사용) ───
+# --- bank_tab compatible function ---
 
 def create_exam_files(target_dir, prefix, exam_data, cfg,
                       is_workbook=False, output_format="Word + PDF",
                       student_name="", set_label=""):
-    """bank_tab.py 에서 장바구니 기반 시험지 생성 시 호출"""
     ts = datetime.datetime.now().strftime("%m%d_%H%M")
     label = f"_{set_label}" if set_label else ""
     font_name = cfg.get("font_name", "맑은 고딕")
@@ -611,12 +825,47 @@ def create_exam_files(target_dir, prefix, exam_data, cfg,
             create_styled_passage_table(doc_q, item["passage"])
             doc_q.add_paragraph()
 
-            for q in item.get("questions", []):
+            questions_list = item.get("questions", [])
+            for q_idx_e, q in enumerate(questions_list):
+                q_text = q.get("text", q.get("content", ""))
+
+                special_pattern = r'(<조건>|\[조건\]|\[우리말\]|\[보기\]|\[정답\]\s*:?|정답\s*:)'
+                special_matches = list(re.finditer(special_pattern, q_text))
+                main_q = q_text
+                special_blocks = []
+
+                expected_next_q_num_e = g_idx + 1
+
+                if special_matches:
+                    main_q = q_text[:special_matches[0].start()].strip()
+                    for idx_m, sm in enumerate(special_matches):
+                        label = sm.group(0).strip().rstrip(':').strip()
+                        start = sm.end()
+                        end = special_matches[idx_m + 1].start() if idx_m + 1 < len(special_matches) else len(q_text)
+                        content = q_text[start:end].strip()
+
+                        if expected_next_q_num_e is not None:
+                            overflow_pat = rf'(?:\n|^|\s{{2,}})(?P<next_q>{expected_next_q_num_e}\s*[\.\\)])\s+(?=[가-힣A-Za-z])'
+                            overflow_match = re.search(overflow_pat, content)
+                            if overflow_match:
+                                content = content[:overflow_match.start()].strip()
+
+                        special_blocks.append((label, content))
+
                 p = doc_q.add_paragraph()
                 num_run = p.add_run(f"{g_idx}. ")
                 num_run.bold = True
                 num_run.font.color.rgb = RGBColor.from_string(Theme.PRIMARY)
-                p.add_run(q.get("text", q.get("content", "")))
+                add_formatted_text(p, main_q)
+
+                for label, content in special_blocks:
+                    if '<조건>' in label or '[조건]' in label:
+                        clean_c = re.sub(r'^(<조건>|\[조건\])\s*\n?', '', content).strip()
+                        create_monochrome_box(doc_q, "<조건>", clean_c)
+                    elif '[우리말]' in label:
+                        create_monochrome_box(doc_q, "우리말:", content)
+                    elif '[보기]' in label:
+                        create_monochrome_box(doc_q, "보기:", content)
 
                 choices = q.get("choices", [])
                 if choices and any(c for c in choices if c):
@@ -636,38 +885,156 @@ def create_exam_files(target_dir, prefix, exam_data, cfg,
                 item["q_mappings"].append({
                     "new_num": g_idx,
                     "orig_num": q.get("num", q.get("q_num", "-")),
-                    "preview": q.get("text", q.get("content", ""))[:25].replace("\n", " ") + "...",
+                    "preview": q_text[:25].replace("\n", " ") + "...",
                 })
                 g_idx += 1
 
     q_docx = os.path.normpath(os.path.join(target_dir, f"{prefix}_문제지_{ts}{label}.docx"))
     doc_q.save(q_docx)
 
-    # 정답지
+    # answer sheet
     doc_a = docx.Document()
     _apply_doc_style(doc_a, font_name, font_size)
     add_header_banner(doc_a, f"맞춤형 {title_prefix} — 정답 및 해설", "", logo_path, font_name)
 
+    new_sec_a = doc_a.add_section(WD_SECTION.CONTINUOUS)
+    _set_two_columns(new_sec_a)
+
+    all_answers = []
+    for idx, item in enumerate(exam_data, 1):
+        if not is_workbook and item.get("q_mappings"):
+            for m_item in item["q_mappings"]:
+                ans_text = ""
+                raw_ans = (item.get("answer_text") or "")
+                orig = m_item.get("orig_num", "")
+                if orig and orig != "-":
+                    ans_match = re.search(
+                        rf'{orig}\s*[\.\\)번]?\s*정답\s*[:：]\s*([^\n]+)',
+                        raw_ans
+                    )
+                    if ans_match:
+                        ans_text = ans_match.group(1).strip()
+                all_answers.append({
+                    "num": str(m_item["new_num"]),
+                    "answer": ans_text
+                })
+
+    has_answers = any(a["answer"] for a in all_answers)
+    if has_answers:
+        label_p = doc_a.add_paragraph()
+        label_run = label_p.add_run("✅ 빠른 정답 채점표")
+        label_run.bold = True
+        label_run.font.size = Pt(10)
+        label_run.font.color.rgb = RGBColor.from_string(Theme.PRIMARY)
+        label_p.paragraph_format.space_after = Pt(4)
+
+        num_items = len(all_answers)
+        cols_per_row = min(num_items, 5)
+        table = doc_a.add_table(rows=1, cols=cols_per_row * 2)
+        table.alignment = WD_TABLE_ALIGNMENT.LEFT
+
+        for row in table.rows:
+            for cell in row.cells:
+                cell.width = Cm(1.0)
+
+        hdr = table.rows[0].cells
+        for i in range(cols_per_row):
+            hdr[i*2].text = '문항'
+            hdr[i*2+1].text = '정답'
+            for c in (hdr[i*2], hdr[i*2+1]):
+                c.width = Cm(1.0)
+                set_cell_background(c, Theme.HEADER_BG)
+                set_cell_borders(c, color=Theme.TABLE_BORDER)
+                set_cell_vertical_alignment(c)
+                for p in c.paragraphs:
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    p.paragraph_format.space_before = Pt(1)
+                    p.paragraph_format.space_after = Pt(1)
+                    for r in p.runs:
+                        r.bold = True
+                        r.font.size = Pt(7)
+                        r.font.color.rgb = RGBColor.from_string(Theme.PRIMARY)
+
+        row_cells = None
+        for i, ans_item in enumerate(all_answers):
+            col_in_row = i % cols_per_row
+            if col_in_row == 0:
+                row_cells = table.add_row().cells
+                for c in row_cells:
+                    c.width = Cm(1.0)
+            col = col_in_row * 2
+            row_cells[col].text = ans_item["num"]
+            display_ans = ans_item["answer"]
+            if len(display_ans) > 8 or ' ' in display_ans:
+                display_ans = "서술"
+            row_cells[col+1].text = display_ans
+            set_cell_background(row_cells[col], Theme.LIGHT_BG)
+            set_cell_borders(row_cells[col], color=Theme.TABLE_BORDER)
+            set_cell_borders(row_cells[col+1], color=Theme.TABLE_BORDER)
+            for p in (row_cells[col].paragraphs[0], row_cells[col+1].paragraphs[0]):
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                p.paragraph_format.space_before = Pt(1)
+                p.paragraph_format.space_after = Pt(1)
+                for r in p.runs:
+                    r.font.size = Pt(8)
+
+        doc_a.add_paragraph()
+        sep_p = doc_a.add_paragraph()
+        set_paragraph_border_bottom(sep_p, color=Theme.TABLE_BORDER, size="4")
+        doc_a.add_paragraph()
+
     for idx, item in enumerate(exam_data, 1):
         h = doc_a.add_paragraph()
-        h.add_run(f"■ [지문 {idx}] 해설\n").bold = True
+        h.paragraph_format.space_before = Pt(10)
+        h_run = h.add_run(f"■ [지문 {idx}] 해설")
+        h_run.bold = True
+        h_run.font.size = Pt(11)
+        h_run.font.color.rgb = RGBColor.from_string(Theme.PRIMARY)
+
         if not is_workbook and item.get("q_mappings"):
             pm = doc_a.add_paragraph()
-            rt = pm.add_run("[※ 문항 번호 매칭표]\n")
+            pm.paragraph_format.space_before = Pt(2)
+            rt = pm.add_run("[※ 문항 번호 매칭표]")
             rt.bold = True
+            rt.font.size = Pt(9)
             rt.font.color.rgb = RGBColor(0, 112, 192)
-            lines = ""
-            for m in item["q_mappings"]:
-                orig = f"{m['orig_num']}번" if m["orig_num"] != "-" else "서술형"
-                lines += f"▶ 시험지 {m['new_num']}번 = 본문 해설 {orig} 참조 | {m['preview']}\n"
-            rm = pm.add_run(lines)
-            rm.font.color.rgb = RGBColor(100, 100, 100)
-            rm.font.size = Pt(9)
+
+            for m_item in item["q_mappings"]:
+                orig = f"{m_item['orig_num']}번" if m_item["orig_num"] != "-" else "서술형"
+                map_p = doc_a.add_paragraph()
+                map_p.paragraph_format.space_before = Pt(0)
+                map_p.paragraph_format.space_after = Pt(0)
+                map_r = map_p.add_run(f"  ▶ 시험지 {m_item['new_num']}번 = 본문 해설 {orig} 참조 | {m_item['preview']}")
+                map_r.font.size = Pt(8)
+                map_r.font.color.rgb = RGBColor(120, 120, 120)
+
             doc_a.add_paragraph()
-        body = doc_a.add_paragraph()
+
         ans = (item.get("answer_text") or "").strip()
-        body.add_run(ans if ans else "(입력된 정답/해설이 없습니다.)")
-        doc_a.add_paragraph("\n" + "=" * 50 + "\n")
+        if ans:
+            for line in ans.split("\n"):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                body_p = doc_a.add_paragraph()
+                num_m = re.match(r'^(\d+)[\.\\)번]\s*', stripped)
+                if num_m:
+                    body_p.paragraph_format.space_before = Pt(6)
+                    nr = body_p.add_run(stripped[:num_m.end()] + " ")
+                    nr.bold = True
+                    nr.font.color.rgb = RGBColor.from_string(Theme.SECONDARY)
+                    body_p.add_run(stripped[num_m.end():].strip())
+                else:
+                    body_p.add_run(stripped)
+        else:
+            no_ans = doc_a.add_paragraph()
+            no_ans.add_run("(입력된 정답/해설이 없습니다.)")
+            no_ans.runs[0].font.color.rgb = RGBColor(160, 160, 160)
+
+        sep = doc_a.add_paragraph()
+        sep.paragraph_format.space_before = Pt(4)
+        sep.paragraph_format.space_after = Pt(4)
+        set_paragraph_border_bottom(sep, color=Theme.TABLE_BORDER, size="4")
 
     a_docx = os.path.normpath(os.path.join(target_dir, f"{prefix}_정답지_{ts}{label}.docx"))
     doc_a.save(a_docx)
