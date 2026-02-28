@@ -1,5 +1,6 @@
 """
-단어장 모델 v6.0 — CRUD, 엑셀 import, 학습 통계, Soft Delete
+단어장 모델 v7.0 — CRUD, 엑셀 import, 학습 통계, Soft Delete, 예문(Sentence) 관리
+v7.0: vocab_sentences CRUD, bulk_add에 sentences 자동 매칭
 """
 
 import datetime
@@ -176,6 +177,8 @@ def delete_vocab_word(cfg, word_id):
     with db_conn(cfg) as conn:
         cur = conn.cursor()
         row = cur.execute("SELECT unit_id FROM vocab_words WHERE id=?", (word_id,)).fetchone()
+        # v7: 예문도 삭제 (CASCADE 미지원 환경 대비)
+        cur.execute("DELETE FROM vocab_sentences WHERE word_id=?", (word_id,))
         cur.execute("DELETE FROM vocab_words WHERE id=?", (word_id,))
         if row:
             _update_unit_word_count(cur, row[0])
@@ -216,6 +219,126 @@ def _update_unit_word_count(cur, unit_id):
     cur.execute("UPDATE vocab_units SET word_count=? WHERE id=?", (cnt, unit_id))
 
 
+# ── v7.0 예문(Sentence) CRUD ──
+
+def add_sentence(cfg, word_id, sentence_en, sentence_ko="", target_form="",
+                 difficulty=1, source="직접입력"):
+    """단어에 예문 1개 추가. target_form 미지정 시 단어 원형 사용."""
+    now = datetime.datetime.now().isoformat()
+    with db_conn(cfg) as conn:
+        cur = conn.cursor()
+        if not target_form:
+            row = cur.execute("SELECT english FROM vocab_words WHERE id=?", (word_id,)).fetchone()
+            target_form = row[0] if row else ""
+        cur.execute(
+            """INSERT INTO vocab_sentences
+               (word_id, sentence_en, sentence_ko, target_form, difficulty, source, created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (word_id, sentence_en.strip(), sentence_ko.strip(),
+             target_form.strip(), difficulty, source, now))
+        return cur.lastrowid
+
+
+def update_sentence(cfg, sentence_id, sentence_en=None, sentence_ko=None,
+                    target_form=None, difficulty=None, source=None):
+    """예문 수정"""
+    with db_conn(cfg) as conn:
+        cur = conn.cursor()
+        sets, params = [], []
+        if sentence_en is not None:
+            sets.append("sentence_en=?"); params.append(sentence_en.strip())
+        if sentence_ko is not None:
+            sets.append("sentence_ko=?"); params.append(sentence_ko.strip())
+        if target_form is not None:
+            sets.append("target_form=?"); params.append(target_form.strip())
+        if difficulty is not None:
+            sets.append("difficulty=?"); params.append(difficulty)
+        if source is not None:
+            sets.append("source=?"); params.append(source)
+        if sets:
+            params.append(sentence_id)
+            cur.execute(f"UPDATE vocab_sentences SET {','.join(sets)} WHERE id=?", params)
+
+
+def delete_sentence(cfg, sentence_id):
+    """예문 1개 삭제"""
+    with db_conn(cfg) as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM vocab_sentences WHERE id=?", (sentence_id,))
+
+
+def list_sentences(cfg, word_id, difficulty=None):
+    """단어의 예문 목록. difficulty 지정 시 해당 난이도만."""
+    with db_conn(cfg) as conn:
+        cur = conn.cursor()
+        query = "SELECT * FROM vocab_sentences WHERE word_id=?"
+        params = [word_id]
+        if difficulty is not None:
+            query += " AND difficulty=?"
+            params.append(difficulty)
+        query += " ORDER BY difficulty, id"
+        rows = cur.execute(query, params).fetchall()
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in rows]
+
+
+def get_sentences_by_word_ids(cfg, word_ids, difficulty=None):
+    """여러 단어의 예문을 한꺼번에 가져오기 (시험지 생성용)"""
+    if not word_ids:
+        return {}
+    with db_conn(cfg) as conn:
+        cur = conn.cursor()
+        placeholders = ",".join("?" * len(word_ids))
+        query = f"SELECT * FROM vocab_sentences WHERE word_id IN ({placeholders})"
+        params = list(word_ids)
+        if difficulty is not None:
+            query += " AND difficulty=?"
+            params.append(difficulty)
+        query += " ORDER BY word_id, difficulty, id"
+        rows = cur.execute(query, params).fetchall()
+        cols = [d[0] for d in cur.description]
+        result = {}
+        for r in rows:
+            d = dict(zip(cols, r))
+            wid = d["word_id"]
+            if wid not in result:
+                result[wid] = []
+            result[wid].append(d)
+        return result
+
+
+def bulk_add_sentences(cfg, word_id, sentences_list, source="AI생성"):
+    """단어 1개에 예문 여러 개 일괄 추가.
+    sentences_list: [{"en": "...", "ko": "...", "target": "...", "diff": 1}, ...]
+    """
+    now = datetime.datetime.now().isoformat()
+    count = 0
+    with db_conn(cfg) as conn:
+        cur = conn.cursor()
+        # target_form 기본값용 원형
+        row = cur.execute("SELECT english FROM vocab_words WHERE id=?", (word_id,)).fetchone()
+        default_form = row[0] if row else ""
+        for s in sentences_list:
+            en = s.get("en", "").strip()
+            if not en:
+                continue
+            ko = s.get("ko", "").strip()
+            target = s.get("target", default_form).strip()
+            diff = s.get("diff", s.get("difficulty", 1))
+            try:
+                diff = int(diff)
+            except (ValueError, TypeError):
+                diff = 1
+            diff = max(1, min(3, diff))  # 1~3 범위 제한
+            cur.execute(
+                """INSERT INTO vocab_sentences
+                   (word_id, sentence_en, sentence_ko, target_form, difficulty, source, created_at)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (word_id, en, ko, target, diff, source, now))
+            count += 1
+    return count
+
+
 # ── 일괄 단어 등록 (JSON/엑셀) ──
 
 def bulk_add_words(cfg, unit_id, words_list):
@@ -244,10 +367,13 @@ def bulk_add_words(cfg, unit_id, words_list):
 def bulk_add_words_with_days(cfg, book_id, day_words_dict):
     """
     여러 Day 한꺼번에 등록.
-    day_words_dict: {"Day 01": [{"english": ..., "korean": ...}, ...], "Day 02": [...], ...}
+    day_words_dict: {"Day 01": [{"english": ..., "korean": ..., "sentences": [...]}, ...], ...}
+    v7.0: sentences 필드가 있으면 예문도 자동 매칭 저장
     반환: {"Day 01": 40, "Day 02": 35, ...}  (Day별 등록 건수)
     """
+    now = datetime.datetime.now().isoformat()
     results = {}
+    total_sentences = 0
     with db_conn(cfg) as conn:
         cur = conn.cursor()
         for sort_idx, (day_name, words) in enumerate(sorted(day_words_dict.items()), 1):
@@ -273,7 +399,31 @@ def bulk_add_words_with_days(cfg, book_id, day_words_dict):
                 cur.execute(
                     "INSERT INTO vocab_words (unit_id, english, korean, part_of_speech, sort_order) VALUES (?,?,?,?,?)",
                     (unit_id, eng, kor, pos, i + 1))
+                word_id = cur.lastrowid
                 count += 1
+
+                # v7.0: sentences 필드가 있으면 예문 자동 저장
+                sentences = w.get("sentences", [])
+                if sentences and isinstance(sentences, list):
+                    for s in sentences:
+                        s_en = s.get("en", "").strip()
+                        if not s_en:
+                            continue
+                        s_ko = s.get("ko", "").strip()
+                        target = s.get("target", eng).strip()
+                        diff = s.get("diff", s.get("difficulty", 1))
+                        try:
+                            diff = int(diff)
+                        except (ValueError, TypeError):
+                            diff = 1
+                        diff = max(1, min(3, diff))
+                        cur.execute(
+                            """INSERT INTO vocab_sentences
+                               (word_id, sentence_en, sentence_ko, target_form, difficulty, source, created_at)
+                               VALUES (?,?,?,?,?,?,?)""",
+                            (word_id, s_en, s_ko, target, diff, "AI생성", now))
+                        total_sentences += 1
+
             _update_unit_word_count(cur, unit_id)
             results[day_name] = count
 
@@ -282,6 +432,10 @@ def bulk_add_words_with_days(cfg, book_id, day_words_dict):
             "SELECT COUNT(*) FROM vocab_units WHERE book_id=? AND is_active=1",
             (book_id,)).fetchone()[0]
         cur.execute("UPDATE vocab_books SET total_units=? WHERE id=?", (cnt, book_id))
+
+    # 예문 총 개수를 결과에 포함 (UI 표시용)
+    if total_sentences > 0:
+        results["__sentences_total__"] = total_sentences
     return results
 
 

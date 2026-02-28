@@ -1,6 +1,6 @@
 """
-DB 코어 v6.0 — 연결 관리, 마이그레이션, 컨텍스트 매니저
-v6.0: 단어장 테이블 4종, vocab_exam_items (오답 추적), is_active (Soft Delete)
+DB 코어 v7.0 — 연결 관리, 마이그레이션, 컨텍스트 매니저
+v7.0: vocab_sentences (단어별 예문, target_form, 난이도)
 """
 
 import os
@@ -126,6 +126,18 @@ def _create_tables_inline(cur):
         FOREIGN KEY (vocab_exam_id) REFERENCES vocab_exam_records(id),
         FOREIGN KEY (word_id) REFERENCES vocab_words(id))""")
 
+    # ── v7.0 단어별 예문 테이블 ──
+    cur.execute("""CREATE TABLE IF NOT EXISTS vocab_sentences (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        word_id INTEGER NOT NULL,
+        sentence_en TEXT NOT NULL,
+        sentence_ko TEXT DEFAULT '',
+        target_form TEXT NOT NULL DEFAULT '',
+        difficulty INTEGER DEFAULT 1,
+        source TEXT DEFAULT '',
+        created_at TEXT DEFAULT '',
+        FOREIGN KEY (word_id) REFERENCES vocab_words(id) ON DELETE CASCADE)""")
+
 
 def _migrate(cur):
     migrations = [
@@ -150,6 +162,9 @@ def _migrate(cur):
         ("vocab_exam_records", "unit_ids_json", "TEXT DEFAULT '[]'"),
         ("vocab_exam_records", "exam_title", "TEXT DEFAULT ''"),
         ("vocab_exam_records", "created_at", "TEXT DEFAULT ''"),
+        # v7 migrations — vocab_sentences
+        ("vocab_sentences", "target_form", "TEXT NOT NULL DEFAULT ''"),
+        ("vocab_sentences", "source", "TEXT DEFAULT ''"),
     ]
     for table, col, ctype in migrations:
         try:
@@ -204,6 +219,18 @@ def _ensure_vocab_tables(cur):
             display_order INTEGER DEFAULT 0,
             FOREIGN KEY (vocab_exam_id) REFERENCES vocab_exam_records(id),
             FOREIGN KEY (word_id) REFERENCES vocab_words(id))""")
+    # v7.0: 예문 테이블
+    if "vocab_sentences" not in tables:
+        cur.execute("""CREATE TABLE vocab_sentences (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            word_id INTEGER NOT NULL,
+            sentence_en TEXT NOT NULL,
+            sentence_ko TEXT DEFAULT '',
+            target_form TEXT NOT NULL DEFAULT '',
+            difficulty INTEGER DEFAULT 1,
+            source TEXT DEFAULT '',
+            created_at TEXT DEFAULT '',
+            FOREIGN KEY (word_id) REFERENCES vocab_words(id) ON DELETE CASCADE)""")
 
 
 def db_stats(cfg):
@@ -221,4 +248,5 @@ def db_stats(cfg):
             "exams": _count("exam_records"),
             "vocab_books": _count("vocab_books"),
             "vocab_words": _count("vocab_words"),
+            "vocab_sentences": _count("vocab_sentences"),
         }
