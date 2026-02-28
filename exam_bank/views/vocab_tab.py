@@ -260,8 +260,10 @@ class VocabTab:
         tk.Label(top, text="단어장 이름:").pack(pady=(12, 2), padx=16, anchor="w")
         ent_name = tk.Entry(top, width=30); ent_name.pack(padx=16, fill="x"); ent_name.focus_set()
         tk.Label(top, text="카테고리:").pack(pady=(8, 2), padx=16, anchor="w")
-        combo_cat = ttk.Combobox(top, values=VOCAB_CATEGORIES, width=20, state="readonly")
-        combo_cat.current(0); combo_cat.pack(padx=16, anchor="w")
+        cat_f = tk.Frame(top); cat_f.pack(fill="x", padx=16)
+        combo_cat = ttk.Combobox(cat_f, values=VOCAB_CATEGORIES, width=15)
+        combo_cat.current(0); combo_cat.pack(side="left")
+        tk.Label(cat_f, text="(직접 입력 가능)", fg="#94a3b8", font=("맑은 고딕", 8)).pack(side="left", padx=4)
 
         def do_add():
             name = ent_name.get().strip()
@@ -286,8 +288,10 @@ class VocabTab:
         tk.Label(top, text="이름:").pack(pady=(12, 2), padx=16, anchor="w")
         ent_name = tk.Entry(top, width=30); ent_name.pack(padx=16, fill="x"); ent_name.insert(0, book["name"])
         tk.Label(top, text="카테고리:").pack(pady=(8, 2), padx=16, anchor="w")
-        combo_cat = ttk.Combobox(top, values=VOCAB_CATEGORIES, width=20, state="readonly")
-        combo_cat.set(book.get("category", "기본단어장")); combo_cat.pack(padx=16, anchor="w")
+        cat_f = tk.Frame(top); cat_f.pack(fill="x", padx=16)
+        combo_cat = ttk.Combobox(cat_f, values=VOCAB_CATEGORIES, width=15)
+        combo_cat.set(book.get("category", "기본단어장")); combo_cat.pack(side="left")
+        tk.Label(cat_f, text="(직접 입력 가능)", fg="#94a3b8", font=("맑은 고딕", 8)).pack(side="left", padx=4)
 
         def do_save():
             update_vocab_book(self.cfg, bid, name=ent_name.get().strip(), category=combo_cat.get())
@@ -474,8 +478,8 @@ class VocabTab:
         df = tk.Frame(jf); df.pack(fill="x", padx=8, pady=4)
         tk.Label(df, text="Day 이름:").pack(side="left")
         ent_day = tk.Entry(df, width=15); ent_day.pack(side="left", padx=4)
-        ent_day.insert(0, "Day 01")
-        tk.Label(df, text="(비워두면 JSON 내 구분 사용)", fg="#94a3b8", font=("맑은 고딕", 8)).pack(side="left")
+        ent_day.insert(0, "")
+        tk.Label(df, text="(비우면 section 필드로 자동 분류)", fg="#94a3b8", font=("맑은 고딕", 8)).pack(side="left")
 
         # 미리보기
         pvf = tk.LabelFrame(top, text=" 3️⃣ 미리보기 ", font=("맑은 고딕", 9, "bold"))
@@ -515,7 +519,18 @@ class VocabTab:
                 kor = w.get("korean", w.get("meaning", w.get("korean_meaning", "")))
                 pos = w.get("pos", w.get("part_of_speech", ""))
                 tree_pv.insert("", "end", values=(i, eng, kor, pos))
-            lbl_pv_count.config(text=f"총 {len(data)}개 단어 파싱됨")
+
+            # section 자동 분류 미리보기
+            sections = {}
+            for w in data:
+                sec = w.get("section", "")
+                if sec:
+                    sections[sec] = sections.get(sec, 0) + 1
+            if sections:
+                sec_info = ", ".join(f"{k}({v})" for k, v in sections.items())
+                lbl_pv_count.config(text=f"총 {len(data)}개 | 자동분류: {sec_info}")
+            else:
+                lbl_pv_count.config(text=f"총 {len(data)}개 단어 파싱됨")
 
         def do_import():
             if not parsed_words:
@@ -526,11 +541,23 @@ class VocabTab:
                 results = bulk_add_words_with_days(self.cfg, bid, {day_name: parsed_words})
                 total = sum(results.values())
             else:
-                # JSON 내 구분 사용 (no 필드 기반 분류는 단일 Day)
-                results = bulk_add_words_with_days(self.cfg, bid, {"Day 01": parsed_words})
-                total = sum(results.values())
+                # section 필드로 자동 분류
+                has_section = any(w.get("section") for w in parsed_words)
+                if has_section:
+                    grouped = {}
+                    for w in parsed_words:
+                        sec = w.get("section", "기타").strip()
+                        if sec not in grouped:
+                            grouped[sec] = []
+                        grouped[sec].append(w)
+                    results = bulk_add_words_with_days(self.cfg, bid, grouped)
+                    total = sum(results.values())
+                else:
+                    results = bulk_add_words_with_days(self.cfg, bid, {"Day 01": parsed_words})
+                    total = sum(results.values())
 
-            messagebox.showinfo("가져오기 완료", f"{total}개 단어가 등록되었습니다.")
+            detail = "\n".join(f"  {k}: {v}개" for k, v in results.items())
+            messagebox.showinfo("가져오기 완료", f"총 {total}개 단어 등록!\n\n{detail}")
             top.destroy()
             self.refresh()
 
