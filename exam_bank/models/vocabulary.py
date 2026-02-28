@@ -1,6 +1,6 @@
 """
-단어장 모델 v7.0 — CRUD, 엑셀 import, 학습 통계, Soft Delete, 예문(Sentence) 관리
-v7.0: vocab_sentences CRUD, bulk_add에 sentences 자동 매칭
+단어장 모델 v7.0.1 — CRUD, 엑셀 import, 학습 통계, Soft Delete, 예문(Sentence) 관리
+v7.0.1: bulk_add_words_with_days에서 example 필드 지원 (문자열→vocab_sentences 자동 등록)
 """
 
 import datetime
@@ -367,8 +367,9 @@ def bulk_add_words(cfg, unit_id, words_list):
 def bulk_add_words_with_days(cfg, book_id, day_words_dict):
     """
     여러 Day 한꺼번에 등록.
-    day_words_dict: {"Day 01": [{"english": ..., "korean": ..., "sentences": [...]}, ...], ...}
-    v7.0: sentences 필드가 있으면 예문도 자동 매칭 저장
+    day_words_dict: {"Day 01": [{"english": ..., "korean": ..., "example": "...", "sentences": [...]}, ...], ...}
+    v7.0.1: example(문자열) 필드 지원 — vocab_words.example_sentence에 저장 + vocab_sentences에도 자동 등록
+    v7.0: sentences(리스트) 필드가 있으면 예문도 자동 매칭 저장
     반환: {"Day 01": 40, "Day 02": 35, ...}  (Day별 등록 건수)
     """
     now = datetime.datetime.now().isoformat()
@@ -396,13 +397,26 @@ def bulk_add_words_with_days(cfg, book_id, day_words_dict):
                 if not eng:
                     continue
                 pos = w.get("pos", w.get("part_of_speech", "")).strip()
+
+                # ★ v7.0.1 수정: example 필드를 example_sentence 컬럼에도 저장
+                example = w.get("example", w.get("example_sentence", "")).strip()
+
                 cur.execute(
-                    "INSERT INTO vocab_words (unit_id, english, korean, part_of_speech, sort_order) VALUES (?,?,?,?,?)",
-                    (unit_id, eng, kor, pos, i + 1))
+                    "INSERT INTO vocab_words (unit_id, english, korean, part_of_speech, example_sentence, sort_order) VALUES (?,?,?,?,?,?)",
+                    (unit_id, eng, kor, pos, example, i + 1))
                 word_id = cur.lastrowid
                 count += 1
 
-                # v7.0: sentences 필드가 있으면 예문 자동 저장
+                # ★ v7.0.1 수정: example 문자열이 있으면 vocab_sentences에도 자동 등록
+                if example:
+                    cur.execute(
+                        """INSERT INTO vocab_sentences
+                           (word_id, sentence_en, sentence_ko, target_form, difficulty, source, created_at)
+                           VALUES (?,?,?,?,?,?,?)""",
+                        (word_id, example, "", eng, 1, "JSON가져오기", now))
+                    total_sentences += 1
+
+                # v7.0: sentences 리스트 필드가 있으면 추가 예문 저장
                 sentences = w.get("sentences", [])
                 if sentences and isinstance(sentences, list):
                     for s in sentences:
@@ -474,18 +488,19 @@ def import_words_from_excel(cfg, book_id, filepath, day_column="day", eng_column
     else:
         raise ValueError(f"지원하지 않는 파일 형식: {ext}")
 
-    # 컬럼 매핑
+    # 컬럼 매핑 — ★ v7.0.1: example 컬럼도 전달
     day_words = {}
     for row in rows:
         day = row.get(day_column, row.get("day", row.get("unit", "Day 01")))
         eng = row.get(eng_column, row.get("english", row.get("word", "")))
         kor = row.get(kor_column, row.get("korean", row.get("meaning", "")))
         pos = row.get(pos_column, row.get("pos", row.get("part_of_speech", "")))
+        example = row.get("example", row.get("example_sentence", ""))
         if not eng:
             continue
         if day not in day_words:
             day_words[day] = []
-        day_words[day].append({"english": eng, "korean": kor, "pos": pos})
+        day_words[day].append({"english": eng, "korean": kor, "pos": pos, "example": example})
 
     return bulk_add_words_with_days(cfg, book_id, day_words)
 
