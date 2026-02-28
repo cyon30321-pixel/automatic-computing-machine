@@ -1,9 +1,9 @@
 """
-상수 정의 모듈 — v7.0
+상수 정의 모듈 — v7.1
 """
 
-APP_NAME = "통합 문제은행 & 시험지 생성기 PRO v7.0"
-APP_VERSION = "7.0.0"
+APP_NAME = "통합 문제은행 & 시험지 생성기 PRO v7.1"
+APP_VERSION = "7.1.0"
 SCHEMA_VERSION = 4
 
 CIRCLE_NUMS = "①②③④⑤"
