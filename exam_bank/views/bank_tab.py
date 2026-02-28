@@ -1,11 +1,16 @@
 """
-문제 관리 탭 — 검색, 트리뷰, 장바구니, 시험지 생성, 자동 출제
+문제 관리 탭 v6.0
+— 드래그 다중 선택 (디바운싱), Ctrl+A (포커스 체크)
+— 시험지 제목/파일명 사용자 지정 (sanitization + PermissionError 방어)
+— 배너 삽입 UI
+— [ ⚙️ 출력 고급 설정 ] LabelFrame 그룹화
 """
 
+import os
 import re
 import json
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, filedialog, ttk
 
 from exam_bank.constants import SCHOOL_LEVELS, EXAM_TYPES, EXAM_YEARS, DIFFICULTY_LABELS
 from exam_bank.models.database import db_conn
@@ -31,6 +36,8 @@ class BankTab:
         self.cart = {}
         self.preview_data = {}
         self.tooltip = ToolTip(app.root)
+        self.banner_path = ""          # v6: 배너 경로
+        self._drag_last_row = None     # v6: 드래그 디바운싱
         self._build()
 
     def _build(self):
@@ -68,6 +75,14 @@ class BankTab:
         self.tree.bind("<Leave>", lambda e: self.tooltip.hide())
         self.tree.bind("<Double-1>", lambda e: self._cart_add())
 
+        # v6: 드래그 선택 (디바운싱)
+        self.tree.bind("<B1-Motion>", self._on_drag_select)
+        self.tree.bind("<ButtonRelease-1>", self._on_drag_end)
+
+        # v6: Ctrl+A 전체 선택 (트리뷰 포커스일 때만)
+        self.tree.bind("<Control-a>", self._select_all_tree)
+        self.tree.bind("<Control-A>", self._select_all_tree)
+
         # ── 트리 액션 ──
         tb = tk.Frame(self.frame); tb.pack(fill="x", padx=10, pady=2)
         tk.Button(tb, text="선택 수정", command=self._edit_selected).pack(side="left", padx=2)
@@ -96,6 +111,7 @@ class BankTab:
 
         bc = tk.Frame(cf); bc.pack(side="right", padx=8, fill="y")
 
+        # ── 기본 옵션 ──
         fmt = tk.Frame(bc); fmt.pack(fill="x", pady=4)
         tk.Label(fmt, text="포맷:").pack(side="left")
         self.combo_format = ttk.Combobox(fmt, values=["Word + PDF", "Word만", "PDF만"], width=12, state="readonly")
@@ -113,12 +129,79 @@ class BankTab:
         self.combo_sets = ttk.Combobox(shf, values=["1","2","3"], width=3, state="readonly")
         self.combo_sets.set("1"); self.combo_sets.pack(side="left", padx=2)
 
+        # ── v6: 출력 고급 설정 ──
+        adv = tk.LabelFrame(bc, text=" ⚙️ 출력 고급 설정 ", font=("맑은 고딕", 8, "bold"), fg="#475569")
+        adv.pack(fill="x", pady=6)
+
+        # 시험지 제목
+        title_f = tk.Frame(adv); title_f.pack(fill="x", padx=4, pady=2)
+        tk.Label(title_f, text="제목:", font=("맑은 고딕", 8)).pack(side="left")
+        self.ent_exam_title = tk.Entry(title_f, width=16, font=("맑은 고딕", 8))
+        self.ent_exam_title.pack(side="left", padx=2)
+
+        # 파일명
+        fname_f = tk.Frame(adv); fname_f.pack(fill="x", padx=4, pady=2)
+        tk.Label(fname_f, text="파일명:", font=("맑은 고딕", 8)).pack(side="left")
+        self.ent_filename = tk.Entry(fname_f, width=16, font=("맑은 고딕", 8))
+        self.ent_filename.pack(side="left", padx=2)
+
+        # 배너
+        banner_f = tk.Frame(adv); banner_f.pack(fill="x", padx=4, pady=2)
+        tk.Button(banner_f, text="배너", font=("맑은 고딕", 8), command=self._select_banner).pack(side="left")
+        tk.Button(banner_f, text="✕", font=("맑은 고딕", 8), width=2, command=self._remove_banner).pack(side="left", padx=2)
+        self.lbl_banner = tk.Label(banner_f, text="(없음)", fg="#94a3b8", font=("맑은 고딕", 7))
+        self.lbl_banner.pack(side="left", padx=2)
+
+        # 빈 값 안내
+        tk.Label(adv, text="(비워두면 기본값 자동 적용)", font=("맑은 고딕", 7), fg="#94a3b8").pack(padx=4, pady=1)
+
+        # ── 생성 버튼 ──
         tk.Button(bc, text="시험지 생성", bg="#16a34a", fg="white", font=("맑은 고딕", 10, "bold"), width=20, command=lambda: self._generate("exam")).pack(pady=3)
         tk.Button(bc, text="워크북 생성", bg="#7c3aed", fg="white", font=("맑은 고딕", 10, "bold"), width=20, command=lambda: self._generate("workbook")).pack(pady=3)
 
         act = tk.Frame(bc); act.pack(fill="x", pady=4)
         tk.Button(act, text="선택 빼기", command=self._cart_remove).pack(side="left", expand=True, fill="x", padx=1)
         tk.Button(act, text="전체 비우기", command=self._cart_clear).pack(side="left", expand=True, fill="x", padx=1)
+
+    # ── v6: 드래그 선택 (디바운싱) ──────────────
+
+    def _on_drag_select(self, event):
+        """마우스 드래그 시 연속 선택 — 새 행일 때만 처리 (Gemini 제안 디바운싱)"""
+        item = self.tree.identify_row(event.y)
+        if item and item != self._drag_last_row:
+            self._drag_last_row = item
+            self.tree.selection_add(item)
+
+    def _on_drag_end(self, event):
+        self._drag_last_row = None
+
+    def _select_all_tree(self, event=None):
+        """Ctrl+A — 포커스가 트리뷰일 때만 작동 (Entry 충돌 방지)"""
+        focused = self.frame.focus_get()
+        if focused != self.tree:
+            return  # Entry 등 다른 위젯이면 기본 동작 유지
+        all_items = []
+        for item in self.tree.get_children():
+            all_items.append(item)
+            all_items.extend(self.tree.get_children(item))
+        if all_items:
+            self.tree.selection_set(all_items)
+        return "break"
+
+    # ── v6: 배너 선택 ─────────────────────────
+
+    def _select_banner(self):
+        path = filedialog.askopenfilename(
+            title="배너 이미지 선택",
+            filetypes=[("이미지 파일", "*.png *.jpg *.jpeg *.bmp *.gif")]
+        )
+        if path:
+            self.banner_path = path
+            self.lbl_banner.config(text=os.path.basename(path)[:18])
+
+    def _remove_banner(self):
+        self.banner_path = ""
+        self.lbl_banner.config(text="(없음)")
 
     # ── 검색 ──────────────────────────────────
 
@@ -282,8 +365,8 @@ class BankTab:
                     self.list_cart.insert("end", f"지문 전체 [ID:{pid}] ({cnt}문제){hist}")
                 else:
                     for qid in qids:
-                        qn = cur.execute("SELECT q_num FROM questions WHERE id=?", (qid,)).fetchone()
-                        num = qn[0] if qn else "-"
+                        qn_row = cur.execute("SELECT q_num FROM questions WHERE id=?", (qid,)).fetchone()
+                        num = qn_row[0] if qn_row else "-"
                         hist = ""
                         if sid:
                             st = get_student_question_stats(self.cfg, sid, qid)
@@ -294,14 +377,25 @@ class BankTab:
     def _cart_add(self, event=None):
         sel = self.tree.selection()
         if not sel: return messagebox.showwarning("알림", "항목을 선택하세요.")
+        added = 0
         for iid in sel:
             if iid.startswith("P_"):
-                self.cart[int(iid.split("_")[1])] = set()
+                pid = int(iid.split("_")[1])
+                if pid not in self.cart:
+                    self.cart[pid] = set()
+                    added += 1
             elif iid.startswith("Q_"):
                 parts = iid.split("_"); qid, pid = int(parts[1]), int(parts[2])
-                if pid not in self.cart: self.cart[pid] = {qid}
-                elif self.cart[pid]: self.cart[pid].add(qid)
+                if pid not in self.cart:
+                    self.cart[pid] = {qid}
+                    added += 1
+                elif self.cart[pid] and qid not in self.cart[pid]:
+                    self.cart[pid].add(qid)
+                    added += 1
         self._sync_cart_ui()
+        # v6: 시각적 피드백
+        if added:
+            self.app.status_bar.set_text(f"✓ {added}개 항목 장바구니에 추가됨")
 
     def _cart_remove(self, event=None):
         for idx in reversed(list(self.list_cart.curselection())):
@@ -338,27 +432,51 @@ class BankTab:
         num_sets = int(self.combo_sets.get())
         do_shuffle = self.var_shuffle.get()
 
+        # v6: 사용자 지정 제목/파일명
+        custom_title = self.ent_exam_title.get().strip()
+        custom_filename = self.ent_filename.get().strip()
+
+        # v6: 배너 (임시로 cfg 오버라이드)
+        original_logo = self.cfg.get("last_logo", "")
+        if self.banner_path:
+            self.cfg["last_logo"] = self.banner_path
+
         messagebox.showinfo("생성 시작", "파일 생성을 시작합니다.\nPDF 변환 시 2~3초 소요될 수 있습니다.")
 
-        if do_shuffle and num_sets > 1:
-            sets = generate_multi_sets(all_qids, num_sets)
-            for label, _ in sets:
+        try:
+            if do_shuffle and num_sets > 1:
+                sets = generate_multi_sets(all_qids, num_sets)
+                for label, _ in sets:
+                    result = create_exam_files(
+                        self.cfg["last_dir"], prefix, exam_data, self.cfg,
+                        is_workbook=is_wb, output_format=self.combo_format.get(),
+                        student_name=student_name, set_label=label,
+                        custom_title=custom_title, custom_filename=custom_filename,
+                    )
+            else:
                 result = create_exam_files(
                     self.cfg["last_dir"], prefix, exam_data, self.cfg,
                     is_workbook=is_wb, output_format=self.combo_format.get(),
-                    student_name=student_name, set_label=label,
+                    student_name=student_name,
+                    custom_title=custom_title, custom_filename=custom_filename,
                 )
-        else:
-            result = create_exam_files(
-                self.cfg["last_dir"], prefix, exam_data, self.cfg,
-                is_workbook=is_wb, output_format=self.combo_format.get(),
-                student_name=student_name,
+
+            # 출제 기록 저장
+            if sid and all_qids:
+                create_exam_record(self.cfg, sid, all_qids, exam_title=f"{prefix}_{student_name}")
+
+            messagebox.showinfo("완료", f"{result}\n\n저장: {self.cfg['last_dir']}")
+            self._cart_clear()
+            open_directory(self.cfg["last_dir"])
+
+        except PermissionError:
+            messagebox.showerror(
+                "파일 접근 오류",
+                "이전에 생성한 파일이 열려 있습니다.\n"
+                "Word 또는 PDF 파일을 먼저 닫은 후 다시 시도해주세요."
             )
-
-        # 출제 기록 저장
-        if sid and all_qids:
-            create_exam_record(self.cfg, sid, all_qids, exam_title=f"{prefix}_{student_name}")
-
-        messagebox.showinfo("완료", f"{result}\n\n저장: {self.cfg['last_dir']}")
-        self._cart_clear()
-        open_directory(self.cfg["last_dir"])
+        except Exception as e:
+            messagebox.showerror("생성 오류", f"오류가 발생했습니다:\n{e}")
+        finally:
+            # v6: 배너 cfg 복원
+            self.cfg["last_logo"] = original_logo
