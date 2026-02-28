@@ -44,9 +44,11 @@ def build_exam_data_from_cart(cfg, cart):
         for q in qs:
             all_qids.append(q["id"])
         exam_data.append({
-            "pid": pid, "passage": p["content"],
+            "pid": pid,
+            "passage": p["content"],
             "questions": [{"num": q["q_num"], "text": q["content"],
-                           "q_num": q["q_num"], "choices": q.get("choices", "[]")} for q in qs],
+                           "q_num": q["q_num"], "choices": q.get("choices", "[]")}
+                          for q in qs],
             "info": f"{p.get('school_year', '')} {p.get('exam_year', '')} {p.get('exam_month', '')}".strip(),
             "answer_text": p.get("answer_text", ""),
         })
