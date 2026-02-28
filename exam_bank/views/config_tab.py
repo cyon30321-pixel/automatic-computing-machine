@@ -1,14 +1,18 @@
 """
-설정 및 백업 탭
+설정 탭 — DB 경로, 폰트, 백업/복원
 """
 
 import os
+import json
 import tkinter as tk
 from tkinter import messagebox, filedialog, ttk
 
-from exam_bank.models.database import db_stats, init_db
-from exam_bank.services.backup import backup_db, backup_db_zip, restore_db, list_backups
-from exam_bank.config import save_config, open_directory, SCRIPT_DIR
+from exam_bank.config import save_config, get_db_path, open_directory
+from exam_bank.models.database import db_stats
+from exam_bank.services.backup import (
+    backup_db, backup_db_zip, restore_db, list_backups,
+    export_json, import_json,
+)
 
 
 class ConfigTab:
@@ -20,97 +24,103 @@ class ConfigTab:
 
     def _build(self):
         main = tk.Frame(self.frame)
-        main.pack(fill="both", expand=True, padx=30, pady=20)
+        main.pack(fill="both", expand=True, padx=20, pady=15)
 
-        # 경로 설정
-        pf = tk.LabelFrame(main, text=" 경로 설정 ", font=("맑은 고딕", 10, "bold"))
-        pf.pack(fill="x", pady=(0, 12))
+        # DB 정보
+        info = tk.LabelFrame(main, text=" DB 정보 ", font=("맑은 고딕", 10, "bold"), pady=8)
+        info.pack(fill="x", pady=(0, 8))
+        self.lbl_db_path = tk.Label(info, text="", anchor="w")
+        self.lbl_db_path.pack(fill="x", padx=10)
+        self.lbl_stats = tk.Label(info, text="", anchor="w", fg="#475569")
+        self.lbl_stats.pack(fill="x", padx=10)
 
-        r0 = tk.Frame(pf); r0.pack(fill="x", padx=10, pady=6)
-        tk.Label(r0, text="출력 폴더:", width=18, anchor="w").pack(side="left")
-        self.lbl_out = tk.Label(r0, text=self.cfg["last_dir"], fg="#2563eb"); self.lbl_out.pack(side="left", padx=8)
-        tk.Button(r0, text="변경", command=self._change_out_dir).pack(side="right", padx=4)
-        tk.Button(r0, text="열기", command=lambda: open_directory(self.cfg["last_dir"])).pack(side="right", padx=4)
+        btns = tk.Frame(info)
+        btns.pack(padx=10, pady=8, anchor="w")
+        tk.Button(btns, text="DB 폴더 변경", command=self._change_db_dir).pack(side="left", padx=4)
+        tk.Button(btns, text="DB 폴더 열기", command=lambda: open_directory(self.cfg.get("db_dir", ""))).pack(side="left", padx=4)
 
-        r1 = tk.Frame(pf); r1.pack(fill="x", padx=10, pady=6)
-        tk.Label(r1, text="DB 폴더:", width=18, anchor="w").pack(side="left")
-        self.lbl_db = tk.Label(r1, text=self.cfg.get("db_dir", SCRIPT_DIR), fg="#16a34a"); self.lbl_db.pack(side="left", padx=8)
-        tk.Button(r1, text="변경", command=self._change_db_dir).pack(side="right", padx=4)
-        tk.Button(r1, text="열기", command=lambda: open_directory(self.cfg.get("db_dir", SCRIPT_DIR))).pack(side="right", padx=4)
+        # 백업
+        bk = tk.LabelFrame(main, text=" 백업 / 복원 ", font=("맑은 고딕", 10, "bold"), pady=8)
+        bk.pack(fill="x", pady=(0, 8))
+        br = tk.Frame(bk)
+        br.pack(padx=10, pady=4, anchor="w")
+        tk.Button(br, text="DB 백업", bg="#2563eb", fg="white", command=self._backup).pack(side="left", padx=4)
+        tk.Button(br, text="ZIP 백업", bg="#7c3aed", fg="white", command=self._backup_zip).pack(side="left", padx=4)
+        tk.Button(br, text="복원", bg="#dc2626", fg="white", command=self._restore).pack(side="left", padx=4)
 
-        # 백업/복원
-        bf = tk.LabelFrame(main, text=" DB 백업 및 복원 ", font=("맑은 고딕", 10, "bold"))
-        bf.pack(fill="x", pady=12)
+        # JSON Import/Export
+        je = tk.LabelFrame(main, text=" JSON Import/Export ", font=("맑은 고딕", 10, "bold"), pady=8)
+        je.pack(fill="x", pady=(0, 8))
+        jr = tk.Frame(je)
+        jr.pack(padx=10, pady=4, anchor="w")
+        tk.Button(jr, text="JSON 내보내기", bg="#16a34a", fg="white", command=self._export_json).pack(side="left", padx=4)
+        tk.Button(jr, text="JSON 가져오기", bg="#ea580c", fg="white", command=self._import_json).pack(side="left", padx=4)
 
-        br = tk.Frame(bf); br.pack(fill="x", padx=10, pady=10)
-        tk.Button(br, text="DB 백업 (.db)", bg="#2563eb", fg="white", font=("맑은 고딕", 10, "bold"), width=16, command=self._backup_db).pack(side="left", padx=4)
-        tk.Button(br, text="ZIP 백업", bg="#0891b2", fg="white", font=("맑은 고딕", 10, "bold"), width=16, command=self._backup_zip).pack(side="left", padx=4)
-        tk.Button(br, text="백업에서 복원", bg="#ea580c", fg="white", font=("맑은 고딕", 10, "bold"), width=16, command=self._restore_db).pack(side="left", padx=4)
-
-        self.lbl_backup_info = tk.Label(bf, text="", font=("맑은 고딕", 9), fg="#64748b")
-        self.lbl_backup_info.pack(padx=10, pady=(0, 8))
-        self._update_backup_info()
-
-        # DB 통계
-        sf = tk.LabelFrame(main, text=" DB 현황 ", font=("맑은 고딕", 10, "bold"))
-        sf.pack(fill="x", pady=12)
-        self.lbl_stats = tk.Label(sf, text="", font=("맑은 고딕", 11), pady=10)
-        self.lbl_stats.pack()
         self.refresh_stats()
 
     def refresh_stats(self):
+        self.lbl_db_path.config(text=f"DB 경로: {get_db_path(self.cfg)}")
         try:
             s = db_stats(self.cfg)
-            self.lbl_stats.config(text=f"지문: {s['passages']}개   문제: {s['questions']}개   학생: {s['students']}명   시험: {s['exams']}건")
+            self.lbl_stats.config(text=f"지문 {s['passages']}개 | 문제 {s['questions']}개 | 학생 {s['students']}명 | 시험 {s['exams']}건")
         except Exception:
-            self.lbl_stats.config(text="DB 연결 오류")
-
-    def _change_out_dir(self):
-        d = filedialog.askdirectory()
-        if d:
-            self.cfg["last_dir"] = d; self.lbl_out.config(text=d); save_config(self.cfg)
+            self.lbl_stats.config(text="DB 연결 실패")
 
     def _change_db_dir(self):
-        d = filedialog.askdirectory()
+        d = filedialog.askdirectory(title="DB 폴더 선택")
         if d:
-            self.cfg["db_dir"] = d; self.lbl_db.config(text=d); save_config(self.cfg)
-            init_db(self.cfg); self.app.refresh_all()
-            messagebox.showinfo("완료", "DB 경로 변경 완료.")
+            self.cfg["db_dir"] = d
+            save_config(self.cfg)
+            from exam_bank.models.database import init_db
+            init_db(self.cfg)
+            self.refresh_stats()
+            self.app.refresh_all()
+            messagebox.showinfo("완료", f"DB 경로 변경: {d}")
 
-    def _backup_db(self):
+    def _backup(self):
         try:
             path = backup_db(self.cfg)
-            messagebox.showinfo("백업 완료", f"백업 파일:\n{path}")
-            self._update_backup_info()
+            messagebox.showinfo("백업 완료", f"저장: {path}")
         except Exception as e:
-            messagebox.showerror("오류", f"백업 실패: {e}")
+            messagebox.showerror("오류", str(e))
 
     def _backup_zip(self):
         try:
             path = backup_db_zip(self.cfg)
-            messagebox.showinfo("ZIP 백업 완료", f"백업 파일:\n{path}")
-            self._update_backup_info()
+            messagebox.showinfo("ZIP 백업 완료", f"저장: {path}")
         except Exception as e:
-            messagebox.showerror("오류", f"백업 실패: {e}")
+            messagebox.showerror("오류", str(e))
 
-    def _restore_db(self):
-        src = filedialog.askopenfilename(
-            title="복원할 백업 파일 선택",
-            filetypes=[("DB/ZIP 파일", "*.db *.zip")],
-            initialdir=self.cfg.get("db_dir", SCRIPT_DIR),
-        )
-        if not src: return
-        if not messagebox.askyesno("경고", "현재 DB를 선택한 백업으로 덮어씁니다.\n계속하시겠습니까?"): return
+    def _restore(self):
+        path = filedialog.askopenfilename(title="복원 파일 선택", filetypes=[("DB/ZIP", "*.db *.zip")])
+        if not path: return
+        if not messagebox.askyesno("복원 확인", "현재 DB를 덮어씁니다. 계속하시겠습니까?"): return
         try:
-            restore_db(self.cfg, src)
-            init_db(self.cfg); self.app.refresh_all()
-            messagebox.showinfo("복원 완료", "DB 복원이 완료되었습니다.")
+            restore_db(self.cfg, path)
+            self.app.refresh_all()
+            messagebox.showinfo("완료", "복원 완료!")
         except Exception as e:
-            messagebox.showerror("오류", f"복원 실패: {e}")
+            messagebox.showerror("오류", str(e))
 
-    def _update_backup_info(self):
-        backups = list_backups(self.cfg)
-        if backups:
-            self.lbl_backup_info.config(text=f"최근 백업: {backups[0]['name']}")
-        else:
-            self.lbl_backup_info.config(text="백업 파일 없음")
+    def _export_json(self):
+        path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON", "*.json")])
+        if not path: return
+        try:
+            data = export_json(self.cfg)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            messagebox.showinfo("완료", f"{len(data)}개 지문 내보내기 완료")
+        except Exception as e:
+            messagebox.showerror("오류", str(e))
+
+    def _import_json(self):
+        path = filedialog.askopenfilename(filetypes=[("JSON", "*.json")])
+        if not path: return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            count = import_json(self.cfg, data)
+            self.app.refresh_all()
+            messagebox.showinfo("완료", f"{count}개 지문 가져오기 완료")
+        except Exception as e:
+            messagebox.showerror("오류", str(e))
