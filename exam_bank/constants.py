@@ -1,10 +1,10 @@
 """
-상수 정의 모듈 — v5.5
+상수 정의 모듈 — v6.0
 """
 
-APP_NAME = "통합 문제은행 & 시험지 생성기 PRO v5.5"
-APP_VERSION = "5.5.0"
-SCHEMA_VERSION = 2
+APP_NAME = "통합 문제은행 & 시험지 생성기 PRO v6.0"
+APP_VERSION = "6.0.0"
+SCHEMA_VERSION = 3
 
 CIRCLE_NUMS = "①②③④⑤"
 ALPHA_CHOICES = ["A", "B", "C", "D", "E"]
@@ -20,6 +20,9 @@ DIFFICULTY_LEVELS = ["1", "2", "3", "4", "5"]
 DIFFICULTY_LABELS = {
     "1": "최하", "2": "하", "3": "중", "4": "상", "5": "최상"
 }
+
+# 단어장 카테고리
+VOCAB_CATEGORIES = ["기본단어장", "시중단어장", "EBS", "부교재", "모의고사", "기타"]
 
 DEFAULT_CONFIG = {
     "last_dir": "",
