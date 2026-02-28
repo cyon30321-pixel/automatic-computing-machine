@@ -586,6 +586,10 @@ class VocabTab:
                 pos = w.get("pos", w.get("part_of_speech", ""))
                 sents = w.get("sentences", [])
                 sc = len(sents)
+                # v7.0.1: example 문자열도 예문 1개로 카운트
+                has_example = bool(w.get("example", w.get("example_sentence", "")).strip())
+                if has_example:
+                    sc += 1
                 total_sents += sc
                 tree_pv.insert("", "end", values=(i, eng, kor, pos, sc if sc else "-"))
 
