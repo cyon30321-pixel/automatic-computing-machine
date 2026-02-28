@@ -1,5 +1,6 @@
 """
-DB 코어 — 연결 관리, 마이그레이션, 컨텍스트 매니저
+DB 코어 v6.0 — 연결 관리, 마이그레이션, 컨텍스트 매니저
+v6.0: 단어장 테이블 4종, vocab_exam_items (오답 추적), is_active (Soft Delete)
 """
 
 import os
@@ -37,6 +38,7 @@ def init_db(cfg):
 
 
 def _create_tables_inline(cur):
+    # ── 기존 테이블 (v5) ──
     cur.execute("""CREATE TABLE IF NOT EXISTS passages (
         id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL,
         category1 TEXT DEFAULT '', category2 TEXT DEFAULT '',
@@ -74,9 +76,60 @@ def _create_tables_inline(cur):
         feedback TEXT DEFAULT '', source TEXT DEFAULT 'manual',
         FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE)""")
 
+    # ── v6.0 단어장 테이블 ──
+    cur.execute("""CREATE TABLE IF NOT EXISTS vocab_books (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        category TEXT DEFAULT '기본단어장',
+        total_units INTEGER DEFAULT 0,
+        is_active INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT '')""")
+
+    cur.execute("""CREATE TABLE IF NOT EXISTS vocab_units (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        book_id INTEGER NOT NULL,
+        unit_name TEXT NOT NULL,
+        sort_order INTEGER DEFAULT 0,
+        word_count INTEGER DEFAULT 0,
+        is_active INTEGER DEFAULT 1,
+        FOREIGN KEY (book_id) REFERENCES vocab_books(id))""")
+
+    cur.execute("""CREATE TABLE IF NOT EXISTS vocab_words (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        unit_id INTEGER NOT NULL,
+        english TEXT NOT NULL,
+        korean TEXT NOT NULL,
+        part_of_speech TEXT DEFAULT '',
+        example_sentence TEXT DEFAULT '',
+        sort_order INTEGER DEFAULT 0,
+        FOREIGN KEY (unit_id) REFERENCES vocab_units(id))""")
+
+    cur.execute("""CREATE TABLE IF NOT EXISTS vocab_exam_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER NOT NULL,
+        exam_date TEXT NOT NULL,
+        exam_title TEXT DEFAULT '',
+        total_words INTEGER DEFAULT 0,
+        correct_count INTEGER DEFAULT 0,
+        exam_type TEXT DEFAULT 'eng_to_kor',
+        unit_ids_json TEXT DEFAULT '[]',
+        created_at TEXT DEFAULT '',
+        FOREIGN KEY (student_id) REFERENCES students(id))""")
+
+    cur.execute("""CREATE TABLE IF NOT EXISTS vocab_exam_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        vocab_exam_id INTEGER NOT NULL,
+        word_id INTEGER NOT NULL,
+        student_answer TEXT DEFAULT '',
+        is_correct INTEGER DEFAULT -1,
+        display_order INTEGER DEFAULT 0,
+        FOREIGN KEY (vocab_exam_id) REFERENCES vocab_exam_records(id),
+        FOREIGN KEY (word_id) REFERENCES vocab_words(id))""")
+
 
 def _migrate(cur):
     migrations = [
+        # v5 migrations
         ("passages", "content_hash", "TEXT DEFAULT ''"),
         ("passages", "updated_at", "TEXT DEFAULT ''"),
         ("questions", "choices", "TEXT DEFAULT '[]'"),
@@ -90,6 +143,13 @@ def _migrate(cur):
         ("students", "created_at", "TEXT DEFAULT ''"),
         ("analysis_records", "source", "TEXT DEFAULT 'manual'"),
         ("analysis_records", "raw_db_block", "TEXT DEFAULT ''"),
+        # v6 migrations — soft delete + vocab
+        ("vocab_books", "is_active", "INTEGER DEFAULT 1"),
+        ("vocab_units", "is_active", "INTEGER DEFAULT 1"),
+        ("vocab_units", "word_count", "INTEGER DEFAULT 0"),
+        ("vocab_exam_records", "unit_ids_json", "TEXT DEFAULT '[]'"),
+        ("vocab_exam_records", "exam_title", "TEXT DEFAULT ''"),
+        ("vocab_exam_records", "created_at", "TEXT DEFAULT ''"),
     ]
     for table, col, ctype in migrations:
         try:
@@ -100,12 +160,65 @@ def _migrate(cur):
         except sqlite3.OperationalError:
             pass
 
+    # v6: 새 테이블이 없으면 생성
+    _ensure_vocab_tables(cur)
+
+
+def _ensure_vocab_tables(cur):
+    """레거시 v5 DB에서 업그레이드 시 vocab 테이블이 없을 수 있으므로 보장"""
+    tables = {r[0] for r in cur.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "vocab_books" not in tables:
+        cur.execute("""CREATE TABLE vocab_books (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL, category TEXT DEFAULT '기본단어장',
+            total_units INTEGER DEFAULT 0, is_active INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT '')""")
+    if "vocab_units" not in tables:
+        cur.execute("""CREATE TABLE vocab_units (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            book_id INTEGER NOT NULL, unit_name TEXT NOT NULL,
+            sort_order INTEGER DEFAULT 0, word_count INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1,
+            FOREIGN KEY (book_id) REFERENCES vocab_books(id))""")
+    if "vocab_words" not in tables:
+        cur.execute("""CREATE TABLE vocab_words (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            unit_id INTEGER NOT NULL, english TEXT NOT NULL,
+            korean TEXT NOT NULL, part_of_speech TEXT DEFAULT '',
+            example_sentence TEXT DEFAULT '', sort_order INTEGER DEFAULT 0,
+            FOREIGN KEY (unit_id) REFERENCES vocab_units(id))""")
+    if "vocab_exam_records" not in tables:
+        cur.execute("""CREATE TABLE vocab_exam_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id INTEGER NOT NULL, exam_date TEXT NOT NULL,
+            exam_title TEXT DEFAULT '', total_words INTEGER DEFAULT 0,
+            correct_count INTEGER DEFAULT 0, exam_type TEXT DEFAULT 'eng_to_kor',
+            unit_ids_json TEXT DEFAULT '[]', created_at TEXT DEFAULT '',
+            FOREIGN KEY (student_id) REFERENCES students(id))""")
+    if "vocab_exam_items" not in tables:
+        cur.execute("""CREATE TABLE vocab_exam_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vocab_exam_id INTEGER NOT NULL, word_id INTEGER NOT NULL,
+            student_answer TEXT DEFAULT '', is_correct INTEGER DEFAULT -1,
+            display_order INTEGER DEFAULT 0,
+            FOREIGN KEY (vocab_exam_id) REFERENCES vocab_exam_records(id),
+            FOREIGN KEY (word_id) REFERENCES vocab_words(id))""")
+
 
 def db_stats(cfg):
     with db_conn(cfg) as conn:
         cur = conn.cursor()
-        p = cur.execute("SELECT COUNT(*) FROM passages").fetchone()[0]
-        q = cur.execute("SELECT COUNT(*) FROM questions").fetchone()[0]
-        s = cur.execute("SELECT COUNT(*) FROM students").fetchone()[0]
-        e = cur.execute("SELECT COUNT(*) FROM exam_records").fetchone()[0]
-        return {"passages": p, "questions": q, "students": s, "exams": e}
+        def _count(tbl):
+            try:
+                return cur.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+            except Exception:
+                return 0
+        return {
+            "passages": _count("passages"),
+            "questions": _count("questions"),
+            "students": _count("students"),
+            "exams": _count("exam_records"),
+            "vocab_books": _count("vocab_books"),
+            "vocab_words": _count("vocab_words"),
+        }
