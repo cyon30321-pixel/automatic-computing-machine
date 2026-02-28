@@ -1,8 +1,8 @@
 """
-강화된 텍스트 파싱 엔진 v5.0
-— Exam Maker PRO v2.1 의 개선된 파싱 로직 통합
+강화된 텍스트 파싱 엔진 v5.4
 — ①②③④⑤ / (A)(B)(C)(D)(E) 선지 자동 인식
 — <조건>, [우리말], [보기], [정답] 블록 분리
+— v5.4: 은/는 조사 정규식 수정, 추가 발문 패턴 보강
 """
 
 import re
@@ -11,10 +11,6 @@ CIRCLED_NUMS = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
 
 
 def _is_valid_choice_block(text, marker_type):
-    """
-    '진짜 선택지 블록'인지 검증.
-    연속된 마커가 최소 3개 이상 있어야 유효한 선택지로 인정.
-    """
     if marker_type == 'num':
         found = []
         for i, ch in enumerate(CIRCLED_NUMS[:5]):
@@ -45,7 +41,6 @@ def _is_valid_choice_block(text, marker_type):
 
 
 def _extract_choices(choices_str, c_type):
-    """선택지 문자열에서 각 보기를 안전하게 추출"""
     choices = ["", "", "", "", ""]
 
     if c_type == 'num':
@@ -97,20 +92,14 @@ def _extract_choices(choices_str, c_type):
 
 
 def parse_exam_text(raw_text):
-    """
-    개선된 시험지 파싱 엔진 (v5.0)
-    반환: [{"passage": str, "questions": [{"num","text","choices","c_type"}, ...] }, ...]
-    """
     exam_data = []
 
-    # 전처리
     raw_text = re.sub(r'```[a-zA-Z]*\n?', '', raw_text)
     raw_text = raw_text.replace('```', '').replace("**", "")
     raw_text = re.sub(r"\[Section (Start|End)\]", "", raw_text, flags=re.IGNORECASE)
     raw_text = re.sub(r"^\s*[-=─]{5,}\s*$", "", raw_text, flags=re.MULTILINE)
     raw_text = re.sub(r"[-_]{3,}", " _______ ", raw_text)
 
-    # 블록 분리
     if re.search(r'\[\s*(?:Questions?\s*)?\d+\s*(?:-\s*\d+)?\s*\]', raw_text, flags=re.IGNORECASE):
         blocks = re.split(r'(?=\[\s*(?:Questions?\s*)?\d+\s*(?:-\s*\d+)?\s*\])', raw_text, flags=re.IGNORECASE)
     else:
@@ -141,7 +130,7 @@ def parse_exam_text(raw_text):
             if re.search(r'(\[정답\]\s*:|정답\s*:|^①|^\(A\))', line_str):
                 in_condition = False
 
-            m = re.match(r'^(?:Q|문|문항)?\s*0*(\d+)[\.\)]\s*(.*)', line_str, re.IGNORECASE)
+            m = re.match(r'^(?:Q|문|문항)?\s*0*(\d+)[\.\\)]\s*(.*)', line_str, re.IGNORECASE)
             is_new_question = False
 
             if m:
@@ -149,7 +138,8 @@ def parse_exam_text(raw_text):
                 if not in_question or not in_condition:
                     is_new_question = True
                 else:
-                    if num > 9 or re.search(r'(하시오|고르시오|쓰시오|것\.|인가\?|는\?)$', line_str):
+                    # v5.4: 은?/는? 둘 다 인식, 추가 발문 패턴 보강
+                    if num > 9 or re.search(r'(하시오|고르시오|쓰시오|것[은는]?\.|인가\?|[은는]\?|적절한|옳[은는]|않[은는])$', line_str):
                         is_new_question = True
                         in_condition = False
 
@@ -175,7 +165,7 @@ def parse_exam_text(raw_text):
 
         questions = []
         for q_text_raw in questions_raw:
-            m = re.match(r"^(?:Q|문|문항)?\s*0*(\d+)[\.\)]\s*(.*)", q_text_raw.strip(), re.DOTALL | re.IGNORECASE)
+            m = re.match(r"^(?:Q|문|문항)?\s*0*(\d+)[\.\\)]\s*(.*)", q_text_raw.strip(), re.DOTALL | re.IGNORECASE)
             if not m:
                 continue
 
@@ -187,7 +177,6 @@ def parse_exam_text(raw_text):
             body_part = q_body
             choices = []
 
-            # 선택지 후보 수집
             candidates = []
             for match_obj in re.finditer(r'①', q_body):
                 rest = q_body[match_obj.start():]
@@ -223,7 +212,6 @@ def parse_exam_text(raw_text):
 
 
 def parse_question_with_choices(text):
-    """간단한 문제+선지 파싱 (호환용)"""
     lines = text.strip().split("\n")
     question_lines = []
     choices = []
