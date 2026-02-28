@@ -77,13 +77,25 @@ class InputTab:
             saved = 0
             for item in parsed:
                 if item.get("_duplicate"): continue
-                extra = f"{item['tag']} {self.ent_extra_tags.get().strip()}".strip() \
-                    if item["tag"] else self.ent_extra_tags.get().strip()
+                tag = item.get("tag", "")
+                extra = f"{tag} {self.ent_extra_tags.get().strip()}".strip() \
+                    if tag else self.ent_extra_tags.get().strip()
+                # v5.0 parser 필드명 → DB 필드명 매핑
+                db_questions = []
+                for q in item.get("questions", []):
+                    db_questions.append({
+                        "q_num": q.get("num", q.get("q_num", "-")),
+                        "content": q.get("text", q.get("content", "")),
+                        "choices": q.get("choices", []),
+                        "answer": q.get("answer", ""),
+                        "explanation": q.get("explanation", ""),
+                        "difficulty": q.get("difficulty", 3),
+                    })
                 create_passage(self.cfg, content=item["passage"],
                     category1=self.combo_cat1.get(), category2=self.combo_cat2.get(),
                     school_year=self.combo_year.get(), exam_year=self.combo_exam_year.get(),
                     exam_month=self.combo_exam_month.get(), publisher=self.ent_pub.get(),
-                    extra_tags=extra, answer_text=ans_raw, questions=item["questions"])
+                    extra_tags=extra, answer_text=ans_raw, questions=db_questions)
                 saved += 1
             msg = f"{saved}개 지문 저장 완료!"
             if dup_count: msg += f"\n({dup_count}개 중복 건너뛰)"
@@ -101,7 +113,9 @@ class InputTab:
             dup_warn = " ⚠️ 중복!" if item.get("_duplicate") else ""
             txt.insert(tk.END, f"{'='*20} [지문 {i}]{dup_warn} {'='*20}\n\n")
             txt.insert(tk.END, item["passage"] + "\n\n")
-            for q in item["questions"]:
-                num = f"{q['q_num']}. " if q["q_num"] != "-" else ""
-                txt.insert(tk.END, f"{num}{q['content']}\n\n")
+            for q in item.get("questions", []):
+                q_num = q.get("num", q.get("q_num", "-"))
+                q_content = q.get("text", q.get("content", ""))
+                num = f"{q_num}. " if q_num != "-" else ""
+                txt.insert(tk.END, f"{num}{q_content}\n\n")
             txt.insert(tk.END, "\n")
