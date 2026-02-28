@@ -1,5 +1,6 @@
 """
-메인 앱 v5.0 — 루트 윈도우, 7개 탭 라우팅, 상태바
+메인 앱 v6.0 — 루트 윈도우, 8개 탭 라우팅, 상태바
+v6.0: 단어장 탭 추가, 상태바에 단어 통계 포함
 """
 
 import tkinter as tk
@@ -16,6 +17,7 @@ from exam_bank.views.exam_tab import ExamTab
 from exam_bank.views.ai_prompt_tab import AIPromptTab
 from exam_bank.views.analysis_tab import AnalysisTab
 from exam_bank.views.config_tab import ConfigTab
+from exam_bank.views.vocab_tab import VocabTab
 
 
 class ExamBankApp:
@@ -38,13 +40,14 @@ class ExamBankApp:
         self.tabs = ttk.Notebook(self.root)
         self.tabs.pack(fill="both", expand=True, padx=8, pady=8)
 
-        # 7개 탭 생성
+        # 8개 탭 생성
         self.dashboard_tab = DashboardTab(self.tabs, self.cfg, self)
         self.input_tab = InputTab(self.tabs, self.cfg, self)
         self.bank_tab = BankTab(self.tabs, self.cfg, self)
         self.exam_tab = ExamTab(self.tabs, self.cfg, self)
         self.ai_prompt_tab = AIPromptTab(self.tabs, self.cfg, self)
         self.analysis_tab = AnalysisTab(self.tabs, self.cfg, self)
+        self.vocab_tab = VocabTab(self.tabs, self.cfg, self)
         self.config_tab = ConfigTab(self.tabs, self.cfg, self)
 
         self.tabs.add(self.dashboard_tab.frame, text="  📊 대시보드  ")
@@ -53,6 +56,7 @@ class ExamBankApp:
         self.tabs.add(self.exam_tab.frame, text="  🖨️ 시험지 생성  ")
         self.tabs.add(self.ai_prompt_tab.frame, text="  🤖 AI 프롬프트  ")
         self.tabs.add(self.analysis_tab.frame, text="  🔍 오답 분석  ")
+        self.tabs.add(self.vocab_tab.frame, text="  📖 단어장  ")
         self.tabs.add(self.config_tab.frame, text="  ⚙️ 설정  ")
 
     def _bind_shortcuts(self):
@@ -73,9 +77,12 @@ class ExamBankApp:
         try:
             s = db_stats(self.cfg)
             cart_count = sum(1 if not v else len(v) for v in self.bank_tab.cart.values())
+            vocab_info = ""
+            if s.get("vocab_books", 0) > 0 or s.get("vocab_words", 0) > 0:
+                vocab_info = f" | 단어장 {s['vocab_books']}권 | 단어 {s['vocab_words']}개"
             self.status_bar.set_text(
                 f"DB: 지문 {s['passages']}개 | 문제 {s['questions']}개 | "
-                f"학생 {s['students']}명 | 시험 {s['exams']}건    "
+                f"학생 {s['students']}명 | 시험 {s['exams']}건{vocab_info}    "
                 f"장바구니: {cart_count}건"
             )
         except Exception:
@@ -89,6 +96,10 @@ class ExamBankApp:
             pass
         try:
             self.bank_tab.refresh()
+        except Exception:
+            pass
+        try:
+            self.vocab_tab.refresh()
         except Exception:
             pass
         try:
