@@ -17,7 +17,7 @@ CONFIG_FILE = os.path.join(SCRIPT_DIR, "exam_pro_config.json")
 
 
 def setup_korean_font():
-    """matplotlib 한글 폰트 자동 설정."""
+    """매트플롯립 한글 폰트 자동 설정."""
     try:
         plt.style.use("seaborn-v0_8-whitegrid")
     except Exception:

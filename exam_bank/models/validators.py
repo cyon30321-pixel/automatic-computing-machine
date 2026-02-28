@@ -7,7 +7,6 @@ from exam_bank.constants import CIRCLE_NUMS, ALPHA_CHOICES, VALID_ANSWERS_NUM, V
 
 
 def normalize_choices(choices):
-    """선지를 항상 길이 5로 패딩."""
     result = list(choices or [])
     while len(result) < 5:
         result.append("")
@@ -15,7 +14,6 @@ def normalize_choices(choices):
 
 
 def detect_choice_type(choices):
-    """선지 유형 감지: 'num'(①~⑤), 'alpha'(A~E)."""
     for ch in (choices or []):
         if ch and any(c in ch for c in CIRCLE_NUMS):
             return "num"
@@ -25,7 +23,6 @@ def detect_choice_type(choices):
 
 
 def validate_answer(answer, choice_type="num"):
-    """정답 값 검증. 유효하면 반환, 아니면 None."""
     if not answer or not answer.strip():
         return None
     answer = answer.strip()
@@ -35,13 +32,11 @@ def validate_answer(answer, choice_type="num"):
 
 
 def compute_content_hash(passage, questions_text=""):
-    """지문+문항 내용 기반 SHA1 해시 (16자)."""
     raw = f"{passage.strip()}|{questions_text.strip()}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def check_answer(student_answer, correct_answer):
-    """답안 비교. 정답이면 True, 오답이면 False, 비교불가면 None."""
     if not student_answer or not correct_answer:
         return None
     s = student_answer.strip()
