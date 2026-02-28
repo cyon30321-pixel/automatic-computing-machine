@@ -11,7 +11,6 @@ from exam_bank.config import get_db_path
 
 @contextmanager
 def db_conn(cfg):
-    """안전한 DB 연결 컨텍스트 매니저."""
     conn = sqlite3.connect(get_db_path(cfg))
     conn.execute("PRAGMA foreign_keys = ON")
     try:
@@ -26,25 +25,18 @@ def db_conn(cfg):
 
 
 def init_db(cfg):
-    """DB 초기화 + 마이그레이션."""
     schema_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "resources", "schema.sql")
-
     with db_conn(cfg) as conn:
         cur = conn.cursor()
-
-        # 스키마 실행
         if os.path.exists(schema_path):
             with open(schema_path, "r", encoding="utf-8") as f:
                 cur.executescript(f.read())
         else:
             _create_tables_inline(cur)
-
-        # 마이그레이션: 기존 테이블에 누락 컬럼 추가
         _migrate(cur)
 
 
 def _create_tables_inline(cur):
-    """schema.sql이 없을 때 인라인 생성."""
     cur.execute("""CREATE TABLE IF NOT EXISTS passages (
         id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT NOT NULL,
         category1 TEXT DEFAULT '', category2 TEXT DEFAULT '',
@@ -84,7 +76,6 @@ def _create_tables_inline(cur):
 
 
 def _migrate(cur):
-    """기존 DB에 새 컬럼이 없으면 추가."""
     migrations = [
         ("passages", "content_hash", "TEXT DEFAULT ''"),
         ("passages", "updated_at", "TEXT DEFAULT ''"),
@@ -111,7 +102,6 @@ def _migrate(cur):
 
 
 def db_stats(cfg):
-    """DB 요약 통계."""
     with db_conn(cfg) as conn:
         cur = conn.cursor()
         p = cur.execute("SELECT COUNT(*) FROM passages").fetchone()[0]
