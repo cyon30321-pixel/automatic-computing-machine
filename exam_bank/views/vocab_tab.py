@@ -25,10 +25,10 @@ from exam_bank.models.vocabulary import (
     import_words_from_excel, get_vocab_unit_stats, get_wrong_words,
     # v7.0: 예문 관련
     add_sentence, update_sentence, delete_sentence, list_sentences,
-    bulk_add_sentences,
+    bulk_add_sentences, get_sentences_by_word_ids,
 )
 from exam_bank.models.student import list_students, get_student
-from exam_bank.services.vocab_generator import create_vocab_test
+from exam_bank.services.vocab_generator import create_vocab_test, create_sentence_test
 from exam_bank.config import open_directory
 
 
@@ -264,6 +264,28 @@ class VocabTab:
         tk.Button(gf, text="🔄 오답 단어만 재시험", bg="#ea580c", fg="white",
                   font=("맑은 고딕", 9, "bold"),
                   command=self._generate_wrong_only).pack(fill="x", padx=8, pady=2)
+
+        # ── v7.0 예문 시험지 ──
+        sf = tk.LabelFrame(gf, text=" 💬 예문 시험지 (v7.0) ", font=("맑은 고딕", 8, "bold"), fg="#7c3aed")
+        sf.pack(fill="x", padx=8, pady=6)
+
+        sr1 = tk.Frame(sf); sr1.pack(fill="x", padx=4, pady=2)
+        tk.Label(sr1, text="모드:", font=("맑은 고딕", 8)).pack(side="left")
+        self.combo_sent_mode = ttk.Combobox(sr1, values=["문장해석 (영→한)", "빈칸영작 (Cloze)"],
+                                             width=16, state="readonly")
+        self.combo_sent_mode.current(0); self.combo_sent_mode.pack(side="left", padx=4)
+
+        sr2 = tk.Frame(sf); sr2.pack(fill="x", padx=4, pady=2)
+        self.var_sent_hint = tk.IntVar(value=0)
+        tk.Checkbutton(sr2, text="첫글자 힌트", variable=self.var_sent_hint, font=("맑은 고딕", 8)).pack(side="left")
+        tk.Label(sr2, text="난이도:", font=("맑은 고딕", 8)).pack(side="left", padx=(8, 0))
+        self.combo_sent_diff = ttk.Combobox(sr2, values=["전체", "1-기본", "2-핵심", "3-심화"],
+                                             width=8, state="readonly")
+        self.combo_sent_diff.current(0); self.combo_sent_diff.pack(side="left", padx=4)
+
+        tk.Button(sf, text="📝 예문 시험지 생성", bg="#7c3aed", fg="white",
+                  font=("맑은 고딕", 9, "bold"),
+                  command=self._generate_sentence_test).pack(fill="x", padx=4, pady=4)
 
     # ═══════════════════════════════════════════
     # 단어장 CRUD
@@ -742,6 +764,97 @@ class VocabTab:
             open_directory(self.cfg["last_dir"])
         except Exception as e:
             messagebox.showerror("오류", str(e))
+
+    def _generate_sentence_test(self):
+        """v7.0: 예문 시험지 생성"""
+        if not self.selected_units:
+            return messagebox.showwarning("경고", "출제 범위를 먼저 설정하세요.\n좌측에서 단원을 선택 후 '▶ 출제 범위에 추가' 클릭!")
+
+        # 출제 범위의 단어 ID 수집
+        all_words = get_words_by_unit_ids(self.cfg, self.selected_units)
+        if not all_words:
+            return messagebox.showwarning("경고", "선택된 범위에 단어가 없습니다.")
+
+        word_ids = [w["id"] for w in all_words]
+        word_map = {w["id"]: w for w in all_words}
+
+        # 예문 가져오기
+        sentences = get_sentences_by_word_ids(self.cfg, word_ids)
+        if not sentences:
+            return messagebox.showwarning("경고", "선택된 범위에 예문이 없습니다.\nAI 가져오기에서 '단어 + 예문' 모드로 먼저 추가하세요.")
+
+        # 난이도 필터
+        diff_sel = self.combo_sent_diff.get()
+        if diff_sel.startswith("1"):
+            sentences = [s for s in sentences if s.get("difficulty", 1) == 1]
+        elif diff_sel.startswith("2"):
+            sentences = [s for s in sentences if s.get("difficulty", 1) == 2]
+        elif diff_sel.startswith("3"):
+            sentences = [s for s in sentences if s.get("difficulty", 1) == 3]
+
+        if not sentences:
+            return messagebox.showwarning("경고", f"난이도 '{diff_sel}' 예문이 없습니다.")
+
+        # 예문 아이템 조합 (word 정보 포함)
+        items = []
+        for s in sentences:
+            wid = s.get("word_id")
+            w = word_map.get(wid, {})
+            items.append({
+                "sentence_en": s.get("sentence_en", ""),
+                "sentence_ko": s.get("sentence_ko", ""),
+                "target_form": s.get("target_form", ""),
+                "difficulty": s.get("difficulty", 1),
+                "word_english": w.get("english", ""),
+                "word_korean": w.get("korean", ""),
+            })
+
+        # 모드
+        test_mode = "translation" if self.combo_sent_mode.current() == 0 else "cloze"
+
+        # 학생
+        sid = self._get_vstudent_id()
+        student_name = ""
+        if sid:
+            s = get_student(self.cfg, sid)
+            student_name = s["name"] if s else ""
+
+        # 단원 이름
+        unit_names = []
+        for uid in self.selected_units:
+            from exam_bank.models.vocabulary import get_vocab_unit
+            u = get_vocab_unit(self.cfg, uid)
+            if u:
+                unit_names.append(u["unit_name"])
+
+        mode_label = "문장해석" if test_mode == "translation" else "빈칸영작"
+        messagebox.showinfo("생성 시작", f"예문 시험지({mode_label}) {len(items)}문항 생성합니다.")
+
+        try:
+            files, err = create_sentence_test(
+                target_dir=self.cfg["last_dir"],
+                sentence_items=items,
+                cfg=self.cfg,
+                test_mode=test_mode,
+                student_name=student_name,
+                show_hint=bool(self.var_sent_hint.get()),
+                shuffle=bool(self.var_shuffle.get()),
+                custom_title=self.ent_vtitle.get().strip(),
+                custom_filename=self.ent_vfilename.get().strip(),
+                logo_path=self.banner_path or self.cfg.get("last_logo", ""),
+                output_format=self.combo_vformat.get(),
+                unit_names=unit_names,
+            )
+            if err:
+                messagebox.showwarning("경고", f"생성 완료 (일부 오류):\n{err}")
+            else:
+                fnames = "\n".join(os.path.basename(f) for f in files)
+                messagebox.showinfo("완료", f"예문 시험지 생성 완료!\n\n{fnames}\n\n저장: {self.cfg['last_dir']}")
+            open_directory(self.cfg["last_dir"])
+        except PermissionError:
+            messagebox.showerror("파일 접근 오류", "이전 파일이 열려 있습니다.\n먼저 닫은 후 다시 시도해주세요.")
+        except Exception as e:
+            messagebox.showerror("생성 오류", f"오류:\n{e}")
 
     # ═══════════════════════════════════════════
     # 배너
