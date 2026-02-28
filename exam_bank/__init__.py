@@ -1,1 +1,2 @@
-# exam_bank package
+"""통합 문제은행 & 시험지 생성기 PRO v5.0"""
+__version__ = "5.0.0"

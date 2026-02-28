@@ -1,22 +1,23 @@
 """
-엔트리포인트: python -m exam_bank
+패키지 실행 진입점
+python -m exam_bank
 """
 
-import os
 import sys
+import os
 import tkinter as tk
 
-# 패키지 경로 설정
-if getattr(sys, 'frozen', False):
-    SCRIPT_DIR = os.path.dirname(sys.executable)
-else:
-    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-
-os.chdir(SCRIPT_DIR)
+# 패키지 디렉터리를 PATH에 추가
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from exam_bank.app import ExamBankApp
 
-if __name__ == "__main__":
+
+def main():
     root = tk.Tk()
     app = ExamBankApp(root)
     root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

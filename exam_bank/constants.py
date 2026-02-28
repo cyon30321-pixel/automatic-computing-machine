@@ -1,9 +1,9 @@
 """
-상수 정의 모듈
+상수 정의 모듈 — v5.0
 """
 
-APP_NAME = "통합 문제은행 시스템 PRO v4.0"
-APP_VERSION = "4.0.0"
+APP_NAME = "통합 문제은행 & 시험지 생성기 PRO v5.0"
+APP_VERSION = "5.0.0"
 SCHEMA_VERSION = 2
 
 CIRCLE_NUMS = "①②③④⑤"
@@ -26,4 +26,20 @@ DEFAULT_CONFIG = {
     "db_dir": "",
     "font_name": "맑은 고딕",
     "font_size": "10",
+    "last_logo": "",
 }
+
+
+class Theme:
+    PRIMARY      = "1B4F72"
+    SECONDARY    = "2E86C1"
+    ACCENT       = "E74C3C"
+    LIGHT_BG     = "EBF5FB"
+    PASSAGE_BG   = "F8F9FA"
+    CONDITION_BG = "FFF9E6"
+    TABLE_BORDER = "B0C4DE"
+    HEADER_BG    = "D4E6F1"
+    GRAY_TEXT    = "7F8C8D"
+    DARK_TEXT    = "2C3E50"
+    GREEN        = "27AE60"
+    ANSWER_BG    = "D5F5E3"
